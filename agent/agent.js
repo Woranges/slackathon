@@ -6,6 +6,7 @@ import {
   createEmojiReactionTool,
   createProcoreIssueTool,
   createSafetyBroadcastTool,
+  createSearchWorkspaceTool,
 } from './tools/index.js';
 
 const SYSTEM_PROMPT = `\
@@ -54,9 +55,12 @@ You may also have access to construction field-operations tools:
 - **create_procore_issue**: file a structured issue/RFI in Procore from a field report
 - **trigger_safety_broadcast**: fan out an urgent safety message via SMS, per-worker translated
 - **check_for_contradictions**: verify project documents agree before answering a spec/drawing question
+- **search_workspace_history**: find a specific past photo, message, or thread via Slack's Real-Time Search API
 
 Use \`check_for_contradictions\` before answering any question that touches specs or \
-drawings — if it finds a conflict, say so and flag it for a human rather than guessing.`;
+drawings — if it finds a conflict, say so and flag it for a human rather than guessing. \
+Prefer \`search_workspace_history\` over general Slack MCP search when the user is asking \
+to retrieve something specific from history (e.g. "find the photo of...").`;
 
 /** @type {string[]} */
 const ALLOWED_TOOLS = [
@@ -64,6 +68,7 @@ const ALLOWED_TOOLS = [
   'create_procore_issue',
   'trigger_safety_broadcast',
   'check_for_contradictions',
+  'search_workspace_history',
 ];
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
@@ -94,6 +99,7 @@ export async function runAgent(text, sessionId = undefined, deps = undefined) {
       createProcoreIssueTool(deps),
       createSafetyBroadcastTool(deps),
       createContradictionCheckTool(deps),
+      createSearchWorkspaceTool(deps),
     ],
   });
 
