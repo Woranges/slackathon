@@ -8,6 +8,7 @@ import pkg from '@slack/oauth';
 const { FileInstallationStore } = pkg;
 
 import { registerListeners } from './listeners/index.js';
+import { registerWebhooks } from './listeners/webhooks/index.js';
 
 const manifest = JSON.parse(readFileSync('manifest.json', 'utf-8'));
 const botScopes = manifest.oauth_config.scopes.bot;
@@ -56,6 +57,7 @@ const app = new App({
 });
 
 registerListeners(app);
+registerWebhooks(app);
 
 (async () => {
   const port = Number.parseInt(process.env.PORT || '3000', 10);

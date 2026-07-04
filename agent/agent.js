@@ -1,5 +1,12 @@
-import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
+import { createSdkMcpServer, query } from '@anthropic-ai/claude-agent-sdk';
+
+import { getProcoreMcpServerConfig } from './mcp/procore.js';
+import {
+  createContradictionCheckTool,
+  createEmojiReactionTool,
+  createProcoreIssueTool,
+  createSafetyBroadcastTool,
+} from './tools/index.js';
 
 const SYSTEM_PROMPT = `\
 You are a friendly Slack assistant. You help people by answering questions, \
@@ -40,25 +47,24 @@ Available capabilities:
 
 Use these tools when they can help answer a question or complete a task — for example, \
 searching for relevant messages, checking a channel for context, or creating a canvas. \
-Also use them when the user explicitly asks you to perform a Slack action.`;
+Also use them when the user explicitly asks you to perform a Slack action.
 
-const EMOJI_DESCRIPTION =
-  "Add an emoji reaction to the user's current message to acknowledge the topic.\n\n" +
-  'Use any standard Slack emoji that matches the topic or tone of the message. ' +
-  'Be creative and specific — if someone mentions a dog, use `dog`; if they sound ' +
-  'frustrated, use `sweat_smile`. The examples below are common picks, not the full set:\n' +
-  '- Gratitude/praise: pray, bow, blush, sparkles, star-struck, heart\n' +
-  '- Frustration/confusion: thinking_face, face_with_monocle, sweat_smile, upside_down_face\n' +
-  '- Something broken: wrench, hammer_and_wrench, mag\n' +
-  '- Performance/slow: hourglass_flowing_sand, snail\n' +
-  '- Urgency: rotating_light, zap, fire\n' +
-  '- Success/celebration: tada, raised_hands, partying_face, rocket, muscle\n' +
-  '- Setup/config: gear, package\n' +
-  '- Network/connectivity: satellite, signal_strength\n' +
-  '- Agreement/acknowledgment: thumbsup, ok_hand, saluting_face, +1';
+## FIELD OPERATIONS TOOLS
+You may also have access to construction field-operations tools:
+- **create_procore_issue**: file a structured issue/RFI in Procore from a field report
+- **trigger_safety_broadcast**: fan out an urgent safety message via SMS, per-worker translated
+- **check_for_contradictions**: verify project documents agree before answering a spec/drawing question
+
+Use \`check_for_contradictions\` before answering any question that touches specs or \
+drawings — if it finds a conflict, say so and flag it for a human rather than guessing.`;
 
 /** @type {string[]} */
-const ALLOWED_TOOLS = ['add_emoji_reaction'];
+const ALLOWED_TOOLS = [
+  'add_emoji_reaction',
+  'create_procore_issue',
+  'trigger_safety_broadcast',
+  'check_for_contradictions',
+];
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
 
@@ -80,42 +86,15 @@ const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
  * @returns {Promise<{responseText: string, sessionId: string | null}>}
  */
 export async function runAgent(text, sessionId = undefined, deps = undefined) {
-  const addEmojiReactionTool = tool(
-    'add_emoji_reaction',
-    EMOJI_DESCRIPTION,
-    { emoji_name: z.string().describe("The Slack emoji name without colons (e.g. 'tada', 'wrench', 'pray').") },
-    async ({ emoji_name }) => {
-      if (!deps) {
-        return { content: [{ type: 'text', text: 'No deps available to add reaction.' }] };
-      }
-
-      // Skip ~15% of reactions to feel more natural
-      if (Math.random() < 0.15) {
-        return {
-          content: [
-            { type: 'text', text: `Skipped :${emoji_name}: reaction (randomly omitted to avoid over-reacting)` },
-          ],
-        };
-      }
-
-      try {
-        await deps.client.reactions.add({
-          channel: deps.channelId,
-          timestamp: deps.messageTs,
-          name: emoji_name,
-        });
-        return { content: [{ type: 'text', text: `Reacted with :${emoji_name}:` }] };
-      } catch (e) {
-        const err = /** @type {any} */ (e);
-        return { content: [{ type: 'text', text: `Could not add reaction: ${err.data?.error || err.message}` }] };
-      }
-    },
-  );
-
   const agentToolsServer = createSdkMcpServer({
     name: 'agent-tools',
     version: '1.0.0',
-    tools: [addEmojiReactionTool],
+    tools: [
+      createEmojiReactionTool(deps),
+      createProcoreIssueTool(deps),
+      createSafetyBroadcastTool(deps),
+      createContradictionCheckTool(deps),
+    ],
   });
 
   /** @type {Record<string, any>} */
@@ -129,6 +108,12 @@ export async function runAgent(text, sessionId = undefined, deps = undefined) {
       headers: { Authorization: `Bearer ${deps.userToken}` },
     };
     allowedTools.push('mcp__slack-mcp__*');
+  }
+
+  const procoreMcpConfig = getProcoreMcpServerConfig();
+  if (procoreMcpConfig) {
+    mcpServers.procore = procoreMcpConfig;
+    allowedTools.push('mcp__procore__*');
   }
 
   /** @type {import('@anthropic-ai/claude-agent-sdk').Options} */
