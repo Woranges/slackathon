@@ -8,7 +8,7 @@ import { translateText } from '../../lib/translate.js';
 
 const DESCRIPTION =
   'Create a structured issue/RFI in Procore from a field report (e.g. a text or ' +
-  "WhatsApp message describing a site issue). Use this when a worker reports a problem " +
+  'WhatsApp message describing a site issue). Use this when a worker reports a problem ' +
   'that needs to be tracked and assigned, not just answered.';
 
 /**

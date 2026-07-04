@@ -9,7 +9,7 @@ import { compareSources } from '../../lib/contradiction.js';
 const DESCRIPTION =
   'Check whether project documents (specs, drawings, RFIs, addenda) agree on a topic ' +
   'before answering a field question. Use this whenever a question touches spec or ' +
-  "drawing details — if sources conflict, do not answer directly; flag it for a human.";
+  'drawing details — if sources conflict, do not answer directly; flag it for a human.';
 
 /**
  * @param {import('../agent.js').AgentDeps} [deps]
