@@ -4,19 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A monorepo containing two parallel implementations of a **Starter Agent** for Slack built with Bolt for JavaScript. Both implementations are functionally identical from the Slack user's perspective but use different AI agent frameworks:
-
-- `claude-agent-sdk/` -- Built with **Claude Agent SDK**
-- `openai-agents-sdk/` -- Built with **OpenAI Agents SDK**
+A **Starter Agent** for Slack built with Bolt for JavaScript and the **Claude Agent SDK**. This started as Slack's official `bolt-js-starter-agent` sample (which offered both a Claude Agent SDK and an OpenAI Agents SDK implementation side by side); the OpenAI variant has been removed and the Claude Agent SDK app flattened to the repo root, since this repo is committed to a single framework.
 
 This is a minimal starter template. It includes one example tool (emoji reactions) and optional Slack MCP Server integration.
 
 ## Commands
 
-All commands must be run from within the respective project directory (`claude-agent-sdk/` or `openai-agents-sdk/`).
-
 ```sh
-# Run the app (requires .env with OPENAI_API_KEY or ANTHROPIC_API_KEY; Slack tokens optional with CLI)
+# Run the app (requires .env with ANTHROPIC_API_KEY; Slack tokens optional with CLI)
 slack run          # via Slack CLI
 node app.js        # directly
 
@@ -30,18 +25,22 @@ npm run check
 npm test
 ```
 
-## Monorepo Structure
+## Repo Structure
 
 ```
-.github/              # Shared CI workflows and dependabot config
-claude-agent-sdk/     # Claude Agent SDK implementation
-openai-agents-sdk/    # OpenAI Agents SDK implementation
-vendor/               # Vendored @slack/bolt tarball from bolt-js main
+.github/              # CI workflows and dependabot config
+agent/                # Agent definition (agent.js) and tool registration (index.js)
+listeners/             # Slack event/action/view handlers
+thread-context/        # Session-ID store for multi-turn conversations
+tests/                 # Unit tests
+manifest.json           # Slack app manifest (agent_view, MCP, OAuth scopes)
+app.js                  # Entry point (Socket Mode)
+app-oauth.js            # Alternate entry point (HTTP mode, for OAuth distribution)
 ```
 
-CI runs biome lint and TypeScript checks against all directories via a matrix strategy in `.github/workflows/lint.yml`. Dependabot monitors `package.json` in all directories independently.
+CI runs biome lint and TypeScript checks via `.github/workflows/lint.yml`. Dependabot monitors `package.json` at root.
 
-## Architecture (shared across all implementations)
+## Architecture
 
 Three-layer design: **app.js** -> **listeners/** -> **agent/**
 
@@ -55,23 +54,17 @@ Each sub-module has a `register(app)` function called from `listeners/index.js`.
 
 **AgentDeps** carries `client`, `userId`, `channelId`, `threadTs`, `messageTs`, `userToken`. Constructed in each listener handler and passed to the agent at runtime.
 
-**Conversation history** (`thread-context/store.js`) is an in-memory Map keyed by `channelId:threadTs` with TTL-based cleanup. This enables multi-turn context.
+**Conversation history** (`thread-context/store.js`) is an in-memory Map keyed by `channelId:threadTs` with TTL-based cleanup (24h) and a max entry limit (1000). The Claude Agent SDK manages conversation history server-side via sessions, so only session IDs need to be tracked locally for resuming conversations via `{ resume: sessionId }`.
 
-**Handler flow** (DM, mention): get history from store -> run agent -> stream response in thread with feedback blocks -> store updated history.
+**Handler flow** (DM, mention): get session ID from store -> run agent -> stream response in thread with feedback blocks -> store updated session ID.
 
-## Key Differences Between Implementations
+## Claude Agent SDK Specifics
 
-| Aspect | Claude Agent SDK | OpenAI Agents SDK |
-|--------|-----------------|-------------------|
-| Agent file | `agent/agent.js` | `agent/agent.js` |
-| Agent definition | `query()` async generator with `createSdkMcpServer()` | `Agent` class with `run()` |
-| Model config | Managed by SDK (Claude models) | Set directly on agent (`model: 'gpt-4.1-mini'`) |
-| Tool definition | `tool()` from `@anthropic-ai/claude-agent-sdk` with Zod schema | `tool()` from `@openai/agents` with Zod schema |
-| Tool context | Closure-based (tools capture `deps`) | `context.deps` parameter |
-| Execution | `runAgent(text, sessionId, deps)` | `runAgent(inputItems, deps)` |
-| Result output | `{ responseText, sessionId }` | `result.finalOutput` and `result.history` |
-| Conversation history | Session-based via `resume` (server-side) — `SessionStore` | Full history stored locally — `ConversationStore` |
-| API key env var | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` |
+**Agent (`agent/agent.js`)** uses `query()` async generator from `@anthropic-ai/claude-agent-sdk`. Tools are registered via `createSdkMcpServer()` and passed as `mcpServers` in options, alongside any external MCP servers (e.g. Slack's own MCP server) — both your own tools and external MCP connections live in the same `mcpServers` object. The `runAgent()` function is async and returns `{ responseText, sessionId }`.
+
+**Tools** are defined with `tool()` from `@anthropic-ai/claude-agent-sdk` using Zod schemas. One example tool (emoji reaction) is included. Tools are created as closures inside `runAgent()` to capture `deps`.
+
+**Feedback blocks** use the `context_actions` block type with `feedback_buttons` elements. A single `feedback` action ID is registered.
 
 ## Code Style
 
