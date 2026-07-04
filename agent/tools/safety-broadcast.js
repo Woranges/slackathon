@@ -5,8 +5,8 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
 import { getWorkersBySite } from '../../lib/db.js';
-import { sendSms } from '../../lib/twilio.js';
 import { translateText } from '../../lib/translate.js';
+import { sendSms } from '../../lib/twilio.js';
 
 const DESCRIPTION =
   'Broadcast a safety message to every worker on a site via SMS, translated into each ' +
@@ -34,7 +34,8 @@ export function createSafetyBroadcastTool(deps) {
       // TODO: schedule an escalation check (~15 min) that calls
       // lib/twilio.js#placeEscalationCall for any worker who hasn't acknowledged.
       for (const worker of workers) {
-        const translated = worker.preferredLanguage !== 'en' ? await translateText(message, worker.preferredLanguage) : message;
+        const translated =
+          worker.preferredLanguage !== 'en' ? await translateText(message, worker.preferredLanguage) : message;
         await sendSms(worker.phone, translated);
       }
 

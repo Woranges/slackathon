@@ -8,8 +8,8 @@
  * @returns {Promise<void>}
  */
 export async function handleTwilioInboundSms(req, res) {
-  const from = req.body?.From;
-  const body = req.body?.Body;
+  const _from = req.body?.From;
+  const _body = req.body?.Body;
 
   // TODO: look up the worker by `from` (lib/db.js#getWorkerByPhone).
   // TODO: if this reply is an acknowledgment to an open broadcast, record it
