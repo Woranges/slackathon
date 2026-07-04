@@ -9,14 +9,6 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    strategy:
-      matrix:
-        directory:
-          - openai-agents-sdk
-          - claude-agent-sdk
-    defaults:
-      run:
-        working-directory: ${{ matrix.directory }}
 
     steps:
       - uses: actions/checkout@v7

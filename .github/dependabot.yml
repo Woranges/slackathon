@@ -1,9 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: "npm"
-    directories:
-      - "/openai-agents-sdk"
-      - "/claude-agent-sdk"
+    directory: "/"
     schedule:
       interval: "weekly"
     labels:

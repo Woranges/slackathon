@@ -1,6 +1,3 @@
-# Build
-.bolt-js-build/
-
 # Claude Code
 .claude/*.local.json
 
@@ -11,7 +8,20 @@
 .DS_Store
 
 # Slack CLI
-*/.slack/apps.json
-*/.slack/apps.dev.json
-*/.slack/cache/
-*/.slack/config.json
+.slack/apps.json
+.slack/apps.dev.json
+.slack/cache/
+.slack/config.json
+
+# Environment
+.env*
+!.env.sample
+
+# Logs
+logs/
+
+# Node.js
+node_modules/
+
+# OAuth
+data/
