@@ -44,8 +44,8 @@ history and threads, send messages, manage canvases) and/or a Procore MCP connec
 (project documents) — use them whenever they'd help answer a question.
 
 Note: structured issue reporting ("issue") and safety broadcasts (\`/broadcast-safety\`) are \
-handled outside this conversational agent entirely — see flows/issue-intake.js and \
-listeners/commands/broadcast-safety.js. Neither needs an LLM, so don't expect to see them \
+handled outside this conversational agent entirely — see features/procore-issue-intake/ and \
+features/safety-broadcast/. Neither needs an LLM, so don't expect to see them \
 called as tools here.`;
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';

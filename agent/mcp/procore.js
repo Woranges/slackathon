@@ -1,5 +1,7 @@
-// MCP connection to Procore, used by check_for_contradictions. Don't build
-// the MCP protocol layer from scratch — use one of, in order of preference:
+// Shared between features/procore-issue-intake/ and features/knowledge-agent/
+// (check_for_contradictions) — kept here rather than inside either feature
+// folder since both genuinely need this same Procore MCP connection. Don't
+// build the MCP protocol layer from scratch — use one of, in order of preference:
 //   1. Procore's own official MCP setup (developers.procore.com/documentation/procore-ai-edge-mcp-setup)
 //   2. Pipedream's hosted MCP endpoint (mcp.pipedream.com/app/procore)
 //   3. A self-hosted community MCP server, only after reading its source —

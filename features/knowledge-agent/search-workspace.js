@@ -3,7 +3,7 @@
 // the general-purpose search already available through the Slack MCP server,
 // which this project claims as one of the hackathon's three named technologies.
 
-import { searchWorkspace } from '../../lib/rtsEngine.js';
+import { searchWorkspace } from './rts-engine.js';
 
 const DESCRIPTION =
   'Search Slack workspace history via the Real-Time Search (RTS) API — for finding ' +
@@ -13,7 +13,7 @@ const DESCRIPTION =
   'channel context.';
 
 /**
- * @param {import('../agent.js').AgentDeps} [deps]
+ * @param {import('../../agent/agent.js').AgentDeps} [deps]
  * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 export function createSearchWorkspaceTool(deps) {

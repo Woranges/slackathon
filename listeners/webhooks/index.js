@@ -1,6 +1,6 @@
 import express from 'express';
 
-import { handleTwilioInboundSms } from './twilio.js';
+import { handleTwilioInboundSms } from '../../features/safety-broadcast/inbound-sms.js';
 
 /**
  * Mount non-Slack inbound webhook routes (Twilio, and later Procore if it

@@ -1,4 +1,4 @@
-import { handleBroadcastSafetyCommand } from './broadcast-safety.js';
+import { handleBroadcastSafetyCommand } from '../../features/safety-broadcast/broadcast-safety.js';
 
 /**
  * Register slash command listeners with the Bolt app.

@@ -297,9 +297,15 @@ The actual Gemini client wrapper (`gemini.js`) lives here, behind a provider-agn
 
 The `store.js` file implements an in-memory conversation-history store, keyed by channel and thread. Unlike Claude's server-side session resume, Gemini's chat API needs the full turn history replayed on each call, so this stores `Content[]` arrays rather than a session ID. TTL-based cleanup (24 hours) and a max entry limit (1000) apply as before.
 
-### `/flows` and `/listeners/commands`
+### `/features`
 
-Deterministic, non-LLM conversation handling — see `.claude/CLAUDE.md` for the reasoning. `flows/issue-intake.js` is a plain step-by-step state machine; `listeners/commands/broadcast-safety.js` is the `/broadcast-safety` slash command.
+The three construction field-operations features each get their own folder, one owner per folder, so parallel work doesn't collide — see `.claude/CLAUDE.md` for the full ownership breakdown and the reasoning behind which are deterministic vs. LLM-driven.
+
+* `features/procore-issue-intake/` — deterministic issue-report flow ("issue" -> area -> photo -> description).
+* `features/safety-broadcast/` — deterministic `/broadcast-safety` slash command and inbound Twilio webhook.
+* `features/knowledge-agent/` — the two LLM tools (`search_workspace_history`, `check_for_contradictions`) registered on the shared conversational agent, plus their supporting logic.
+
+`listeners/commands/` and `listeners/webhooks/` stay thin — they just register a handler imported from the relevant `features/` folder.
 
 ## Troubleshooting
 

@@ -1,9 +1,11 @@
+// Owner: procore-issue-intake feature.
+//
 // Deterministic (non-LLM) structured issue-intake flow. A worker starts it
 // by texting/typing "issue"; the bot walks them through area -> photo ->
 // description one step at a time, then writes to Procore and posts a Slack
 // card. No LLM call anywhere in this file — see CLAUDE.md for why.
 
-import { translateText } from '../lib/translate.js';
+import { translateText } from '../../lib/translate.js';
 
 /** @typedef {'area' | 'photo' | 'description'} FlowStep */
 

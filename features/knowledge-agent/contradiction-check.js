@@ -2,7 +2,7 @@
 // RFIs, addenda) agree on a topic, via the Procore MCP connection, before
 // answering.
 
-import { compareSources } from '../../lib/contradiction.js';
+import { compareSources } from './contradiction.js';
 
 const DESCRIPTION =
   'Check whether project documents (specs, drawings, RFIs, addenda) agree on a topic ' +
@@ -10,7 +10,7 @@ const DESCRIPTION =
   'drawing details — if sources conflict, do not answer directly; flag it for a human.';
 
 /**
- * @param {import('../agent.js').AgentDeps} [deps]
+ * @param {import('../../agent/agent.js').AgentDeps} [deps]
  * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 export function createContradictionCheckTool(deps) {
@@ -33,7 +33,7 @@ export function createContradictionCheckTool(deps) {
       // TODO: retrieve relevant sources for `topic` via the Procore MCP
       // connection (declared in agent/agent.js's mcpServers) — e.g. latest
       // drawing revision, spec section, addenda, prior RFI answers.
-      // TODO: pass retrieved sources to lib/contradiction.js#compareSources.
+      // TODO: pass retrieved sources to ./contradiction.js#compareSources.
       const result = await compareSources([]);
 
       return result.hasConflict

@@ -1,5 +1,9 @@
 import { runAgent } from '../../agent/index.js';
-import { advanceIssueIntake, hasActiveFlow, isIssueIntakeTrigger } from '../../flows/issue-intake.js';
+import {
+  advanceIssueIntake,
+  hasActiveFlow,
+  isIssueIntakeTrigger,
+} from '../../features/procore-issue-intake/issue-intake.js';
 import { conversationStore } from '../../thread-context/index.js';
 import { buildFeedbackBlocks } from '../views/feedback-builder.js';
 

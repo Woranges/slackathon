@@ -1,6 +1,8 @@
+// Owner: knowledge-agent feature.
+//
 // LLM-based comparison of retrieved document excerpts (specs, RFIs, addenda)
 // to flag conflicts before the agent answers a field question. Separate from
-// rtsEngine.js: this compares *external* Procore documents, not Slack history.
+// rts-engine.js: this compares *external* Procore documents, not Slack history.
 
 /**
  * @typedef {Object} DocSource
@@ -31,7 +33,7 @@ export async function compareSources(sources) {
   }
 
   // TODO: prompt an LLM to diff `sources` and flag contradictions, citing
-  // which sources disagree. Keep the guardrail from agent/tools/contradiction-check.js:
+  // which sources disagree. Keep the guardrail from ./contradiction-check.js:
   // only auto-answer when this returns hasConflict: false.
-  throw new Error('Not implemented: wire up lib/contradiction.js#compareSources');
+  throw new Error('Not implemented: wire up features/knowledge-agent/contradiction.js#compareSources');
 }

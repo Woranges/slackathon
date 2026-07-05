@@ -1,3 +1,5 @@
+// Owner: safety-broadcast feature.
+//
 // Deterministic (non-LLM) safety-broadcast slash command. No LLM call
 // anywhere in this file — the manager already knows exactly what they want
 // to send, so there's no ambiguity for a model to resolve. See CLAUDE.md.
@@ -37,7 +39,7 @@ export async function handleBroadcastSafetyCommand({ command, ack, respond }) {
   // TODO: create a broadcast record in lib/db.js to track acknowledgments.
   // TODO: post a live-updating message in the channel ("38/45 acknowledged")
   // via client.chat.update — update it as inbound acks arrive via
-  // listeners/webhooks/twilio.js.
+  // features/safety-broadcast/inbound-sms.js.
   // TODO: schedule an escalation check (~15 min) that calls
   // lib/twilio.js#placeEscalationCall for any worker who hasn't acknowledged.
   for (const worker of workers) {
