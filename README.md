@@ -2,7 +2,7 @@
 
 A minimal starter template for building AI-powered Slack agents with [Bolt for JavaScript](https://docs.slack.dev/tools/bolt-js/) and [Google Gemini](https://ai.google.dev/) (via [`@google/genai`](https://www.npmjs.com/package/@google/genai)) — chosen for its free tier (1,500 requests/day on Flash models, no credit card required). Works with the [Slack MCP Server](https://github.com/slackapi/slack-mcp-server) to search messages, read channels, send messages, and manage canvases — all from within your agent.
 
-This repo also adds a set of construction field-operations features on top of the starter template: a deterministic (no-LLM) issue-intake flow, a deterministic `/broadcast-safety` command, and an LLM-driven search + contradiction-checking agent. See `.claude/CLAUDE.md` for why some of this is deliberately *not* routed through the LLM.
+This repo also adds a set of construction field-operations features on top of the starter template — an issue-intake flow, a `/broadcast-safety` command, and a search + contradiction-checking agent — each with its own LLM conversation via `lib/llm/`, kept separate from the general assistant. See `.claude/CLAUDE.md` for the reasoning.
 
 ## App Overview
 
@@ -299,10 +299,10 @@ The `store.js` file implements an in-memory conversation-history store, keyed by
 
 ### `/features`
 
-The three construction field-operations features each get their own folder, one owner per folder, so parallel work doesn't collide — see `.claude/CLAUDE.md` for the full ownership breakdown and the reasoning behind which are deterministic vs. LLM-driven.
+The three construction field-operations features each get their own folder, one owner per folder, so parallel work doesn't collide — see `.claude/CLAUDE.md` for the full ownership breakdown and how each uses `lib/llm/`.
 
-* `features/procore-issue-intake/` — deterministic issue-report flow ("issue" -> area -> photo -> description).
-* `features/safety-broadcast/` — deterministic `/broadcast-safety` slash command and inbound Twilio webhook.
+* `features/procore-issue-intake/` — LLM-driven issue-report conversation ("issue" -> free-form area/description/photo, gathered across as many messages as it takes).
+* `features/safety-broadcast/` — `/broadcast-safety` slash command (LLM extracts message + site from free-form phrasing) and inbound Twilio webhook (LLM classifies replies as acknowledgment/issue-report/other).
 * `features/knowledge-agent/` — the two LLM tools (`search_workspace_history`, `check_for_contradictions`) registered on the shared conversational agent, plus their supporting logic.
 
 `listeners/commands/` and `listeners/webhooks/` stay thin — they just register a handler imported from the relevant `features/` folder.

@@ -8,6 +8,24 @@ A **Starter Agent** for Slack built with Bolt for JavaScript and **Google Gemini
 
 On top of the starter template, this repo adds three construction field-operations features, each owned by a different person/team and kept in its own `features/` folder specifically so parallel work doesn't collide — see "Feature ownership" below.
 
+## Project Status
+
+This is an active hackathon build, not a finished product. The scaffolding, routing,
+feature-folder structure, and LLM wiring are done and verified (typecheck/lint/tests all
+pass, and both entry points boot cleanly) — but most feature logic underneath is still
+stub functions with `TODO` comments: Twilio, the database, translation, and Procore MCP
+are none of them wired to real services yet. Don't assume a feature works end-to-end just
+because its tool/handler exists — check for `TODO` before relying on it.
+
+**Required env vars to run anything:** `GEMINI_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
+(see `.env.sample`). Slack tokens can come from the Slack CLI instead of `.env` if running
+via `slack run`. `PROCORE_MCP_URL`/`PROCORE_MCP_TOKEN`, `TWILIO_*`, `DATABASE_URL`, and
+`TRANSLATE_API_KEY` are all optional until their corresponding TODOs are implemented.
+
+**Before opening a PR:** run `npm install`, then `npm run check`, `npm run lint`, and
+`npm test` — CI runs all three on every push/PR, and every change so far in this repo's
+history has gone through this exact verification before being pushed.
+
 ## Commands
 
 ```sh
@@ -49,8 +67,9 @@ so two people can work in parallel without touching each other's files. A file's
 always states which feature it belongs to (`// Owner: <feature> feature.`).
 
 - **`features/procore-issue-intake/`** — `issue-intake.js`. A worker reports an issue by
-  texting "issue"; the bot walks them through area -> photo -> description one question at
-  a time, then (once wired up) writes to Procore via the MCP connection in `agent/mcp/procore.js`.
+  texting "issue"; an LLM conversation (via `lib/llm/`) gathers area + description
+  (photo optional) from however they actually phrase it, then (once wired up) writes to
+  Procore via the MCP connection in `agent/mcp/procore.js`.
 - **`features/safety-broadcast/`** — `broadcast-safety.js` (the `/broadcast-safety "message"
   --site=<site>` slash command) and `inbound-sms.js` (the inbound Twilio webhook — worker
   replies/acknowledgments land here).
@@ -68,56 +87,59 @@ already imports it before relocating anything.
 `listeners/webhooks/index.js` only import a handler from the relevant `features/` folder and
 register it with Bolt/Express — the actual logic lives in `features/`, not `listeners/`.
 
-## LLM vs. deterministic: an intentional split
+## Where the LLM is actually used
 
-Not everything here goes through the LLM agent, on purpose. Only use an LLM where the
-task genuinely requires reasoning over unstructured input — don't route deterministic
-work through it just because Gemini is available.
+All three features now go through `lib/llm/` (Gemini). This is a deliberate reversal from
+an earlier version of this repo where issue-intake and safety-broadcast were kept fully
+deterministic (rigid keyword/regex matching, no model call) specifically to avoid cost and
+non-determinism. That tradeoff was revisited: rigid state machines and exact-match parsing
+get unmanageable fast as real-world phrasing varies, so all three features now call into
+`lib/llm/` — each with its own narrow system prompt and tool(s), not a shared conversation.
 
-- **`features/procore-issue-intake/issue-intake.js`** — a plain step-by-step state machine
-  (in-memory `Map` keyed by `channelId:threadTs`), hooked into `listeners/events/message.js`
-  *before* it falls through to the LLM agent. No LLM call anywhere in this file today —
-  though see "Future direction" below, since this is the one place a future LLM upgrade is
-  explicitly anticipated.
-- **`features/safety-broadcast/broadcast-safety.js`** — the manager already knows exactly
-  what they want to send, so there's no ambiguity for a model to resolve — this is a direct
-  translate -> fan-out-via-Twilio -> ack-tracking flow, no LLM call.
-- **`agent/agent.js`** (the actual LLM-driven part) — a conversational assistant with
-  three tools: `add_emoji_reaction`, `check_for_contradictions`, and
-  `search_workspace_history`. These three genuinely benefit from an LLM: reacting
-  appropriately to open-ended messages, comparing document excerpts for *semantic*
-  contradictions (not something regex can do), and deciding whether a natural-language
-  question is a search request or a spec question.
+- **`features/procore-issue-intake/issue-intake.js`** — an LLM conversation gathers area +
+  description (photo optional) from however the worker phrases it, across as many messages
+  as it takes, then calls a local `file_issue` tool once it has enough. Per-thread history
+  (`Content[]`) is tracked in an in-memory `Map`, separate from the general assistant's
+  `ConversationStore`. Trigger detection ("does this message start the flow") stays a plain
+  keyword check — no LLM cost on messages that were never going to start this flow.
+- **`features/safety-broadcast/broadcast-safety.js`** — a single-shot LLM call extracts
+  `{ message, site }` from however the manager phrases the slash-command text (not a rigid
+  `"message" --site=<site>` syntax), via a forced tool call rather than parsing plain text.
+- **`features/safety-broadcast/inbound-sms.js`** — a single-shot LLM call classifies an
+  inbound SMS reply as `acknowledgment` / `issue_report` / `other`, since real acknowledgment
+  replies vary ("got it", "👍", "roger") far more than an exact `"OK"` match would catch.
+- **`agent/agent.js`** — the general conversational assistant, with three tools:
+  `add_emoji_reaction`, `check_for_contradictions`, `search_workspace_history`.
 - **`features/knowledge-agent/contradiction.js#compareSources`** is a standalone
   prompt-completion call, not routed through the chat/history plumbing in `agent/agent.js`
   — it can call `@google/genai`'s `generateContent` directly rather than going through
   `lib/llm/`'s chat-session wrapper.
 
-**Future direction, on purpose:** `features/procore-issue-intake/issue-intake.js` and
-`features/safety-broadcast/broadcast-safety.js` are deliberately rigid right now (exact-match
-steps, one question at a time) to keep them simple and free to run. The plan is for
-both to eventually call into `lib/llm/` too — e.g. to parse a free-form issue report
-in one message instead of three rigid questions, or to make broadcast acknowledgment
-detection more forgiving than exact string matches. `lib/llm/` is deliberately
-structured as a provider-agnostic layer (`index.js` re-exporting whichever provider
-file, currently `gemini.js`) specifically so it's easy to call from these deterministic
-features later without re-plumbing anything — don't couple `features/procore-issue-intake/`
-or `features/safety-broadcast/` directly to `@google/genai`; go through `lib/llm/`.
+**Why `lib/llm/` exists as its own layer, not just inline `@google/genai` calls everywhere:**
+so a future provider swap (or per-feature provider choice) only touches one file
+(`lib/llm/index.js`) instead of every call site. Don't import `@google/genai` directly from
+`features/` or `agent/` — always go through `lib/llm/`.
+
+**Cost/predictability tradeoff, worth knowing:** every one of these features now makes at
+least one Gemini call per interaction. `MAX_TOOL_CALL_ROUNDS` in `lib/llm/gemini.js` guards
+against a runaway loop in any of them. If cost or determinism ever becomes a real problem
+for `broadcast-safety.js` or `inbound-sms.js` specifically (both are single-shot extraction
+calls, easy to fall back to regex/keyword matching if needed), that's a narrower, cheaper
+rollback than undoing the whole LLM integration.
 
 ## Architecture
 
-Three-layer design for the LLM-driven half: **app.js** -> **listeners/** -> **agent/** (which
-pulls tools from **features/knowledge-agent/**). The deterministic half
-(**features/procore-issue-intake/**, **features/safety-broadcast/**) is reached via
-`listeners/events/message.js` and `listeners/commands/`/`listeners/webhooks/` respectively,
-but never touches `agent/`.
+**app.js** -> **listeners/** -> either **agent/** (general assistant, pulling tools from
+**features/knowledge-agent/**) or directly into **features/procore-issue-intake/** /
+**features/safety-broadcast/**, each running its own separate `lib/llm/` call rather than
+sharing the general assistant's conversation.
 
 **Entry point (`app.js`)** initializes Bolt with Socket Mode and calls `registerListeners(app)`.
 
 **Listeners** are organized by Slack platform feature, and stay thin (see "Feature ownership"):
-- `listeners/events/` -- `app-home-opened` (Home tab view + Messages-tab suggested prompts via `event.tab` branch), `app-mentioned`, `message` (checks for the deterministic issue-intake flow before falling through to the LLM agent)
+- `listeners/events/` -- `app-home-opened` (Home tab view + Messages-tab suggested prompts via `event.tab` branch), `app-mentioned`, `message` (checks for an active/triggered issue-intake flow before falling through to the general LLM agent)
 - `listeners/actions/` -- `feedback-buttons`
-- `listeners/commands/` -- `/broadcast-safety` (fully deterministic, no LLM)
+- `listeners/commands/` -- `/broadcast-safety` (its own LLM call, separate from the general agent)
 - `listeners/webhooks/` -- inbound Twilio SMS (HTTP mode only — see `app-oauth.js`)
 
 Each sub-module has a `register(app)` function called from `listeners/index.js`.
