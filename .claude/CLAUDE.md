@@ -8,6 +8,24 @@ A **Starter Agent** for Slack built with Bolt for JavaScript and **Google Gemini
 
 On top of the starter template, this repo adds three construction field-operations features, each owned by a different person/team and kept in its own `features/` folder specifically so parallel work doesn't collide — see "Feature ownership" below.
 
+## Project Status
+
+This is an active hackathon build, not a finished product. The scaffolding, routing,
+feature-folder structure, and LLM wiring are done and verified (typecheck/lint/tests all
+pass, and both entry points boot cleanly) — but most feature logic underneath is still
+stub functions with `TODO` comments: Twilio, the database, translation, and Procore MCP
+are none of them wired to real services yet. Don't assume a feature works end-to-end just
+because its tool/handler exists — check for `TODO` before relying on it.
+
+**Required env vars to run anything:** `GEMINI_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
+(see `.env.sample`). Slack tokens can come from the Slack CLI instead of `.env` if running
+via `slack run`. `PROCORE_MCP_URL`/`PROCORE_MCP_TOKEN`, `TWILIO_*`, `DATABASE_URL`, and
+`TRANSLATE_API_KEY` are all optional until their corresponding TODOs are implemented.
+
+**Before opening a PR:** run `npm install`, then `npm run check`, `npm run lint`, and
+`npm test` — CI runs all three on every push/PR, and every change so far in this repo's
+history has gone through this exact verification before being pushed.
+
 ## Commands
 
 ```sh
