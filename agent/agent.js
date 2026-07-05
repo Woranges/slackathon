@@ -1,13 +1,7 @@
 import { createSdkMcpServer, query } from '@anthropic-ai/claude-agent-sdk';
 
 import { getProcoreMcpServerConfig } from './mcp/procore.js';
-import {
-  createContradictionCheckTool,
-  createEmojiReactionTool,
-  createProcoreIssueTool,
-  createSafetyBroadcastTool,
-  createSearchWorkspaceTool,
-} from './tools/index.js';
+import { createContradictionCheckTool, createEmojiReactionTool, createSearchWorkspaceTool } from './tools/index.js';
 
 const SYSTEM_PROMPT = `\
 You are a friendly Slack assistant. You help people by answering questions, \
@@ -51,25 +45,22 @@ searching for relevant messages, checking a channel for context, or creating a c
 Also use them when the user explicitly asks you to perform a Slack action.
 
 ## FIELD OPERATIONS TOOLS
-You may also have access to construction field-operations tools:
-- **create_procore_issue**: file a structured issue/RFI in Procore from a field report
-- **trigger_safety_broadcast**: fan out an urgent safety message via SMS, per-worker translated
+You may also have access to two construction field-operations tools:
 - **check_for_contradictions**: verify project documents agree before answering a spec/drawing question
 - **search_workspace_history**: find a specific past photo, message, or thread via Slack's Real-Time Search API
 
 Use \`check_for_contradictions\` before answering any question that touches specs or \
 drawings — if it finds a conflict, say so and flag it for a human rather than guessing. \
 Prefer \`search_workspace_history\` over general Slack MCP search when the user is asking \
-to retrieve something specific from history (e.g. "find the photo of...").`;
+to retrieve something specific from history (e.g. "find the photo of...").
+
+Note: structured issue reporting ("issue") and safety broadcasts (\`/broadcast-safety\`) are \
+handled outside this conversational agent entirely — see flows/issue-intake.js and \
+listeners/commands/broadcast-safety.js. Neither needs an LLM, so don't expect to see them \
+called as tools here.`;
 
 /** @type {string[]} */
-const ALLOWED_TOOLS = [
-  'add_emoji_reaction',
-  'create_procore_issue',
-  'trigger_safety_broadcast',
-  'check_for_contradictions',
-  'search_workspace_history',
-];
+const ALLOWED_TOOLS = ['add_emoji_reaction', 'check_for_contradictions', 'search_workspace_history'];
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
 
@@ -94,13 +85,7 @@ export async function runAgent(text, sessionId = undefined, deps = undefined) {
   const agentToolsServer = createSdkMcpServer({
     name: 'agent-tools',
     version: '1.0.0',
-    tools: [
-      createEmojiReactionTool(deps),
-      createProcoreIssueTool(deps),
-      createSafetyBroadcastTool(deps),
-      createContradictionCheckTool(deps),
-      createSearchWorkspaceTool(deps),
-    ],
+    tools: [createEmojiReactionTool(deps), createContradictionCheckTool(deps), createSearchWorkspaceTool(deps)],
   });
 
   /** @type {Record<string, any>} */

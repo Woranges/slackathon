@@ -29,26 +29,58 @@ npm test
 
 ```
 .github/              # CI workflows and dependabot config
-agent/                # Agent definition (agent.js) and tool registration (index.js)
-listeners/             # Slack event/action/view handlers
-thread-context/        # Session-ID store for multi-turn conversations
-tests/                 # Unit tests
-manifest.json           # Slack app manifest (agent_view, MCP, OAuth scopes)
-app.js                  # Entry point (Socket Mode)
-app-oauth.js            # Alternate entry point (HTTP mode, for OAuth distribution)
+agent/                # LLM-driven conversational assistant: agent.js, tools/, mcp/
+flows/                 # Deterministic (no-LLM) multi-step conversation flows
+lib/                    # Shared utilities: translate, db, twilio, rtsEngine, contradiction
+listeners/              # Slack event/action/command/view handlers
+thread-context/         # Session-ID store for the LLM assistant's multi-turn conversations
+tests/                  # Unit tests
+manifest.json            # Slack app manifest (agent_view, MCP, OAuth scopes, slash commands)
+app.js                   # Entry point (Socket Mode)
+app-oauth.js             # Alternate entry point (HTTP mode, for OAuth distribution)
 ```
 
 CI runs biome lint and TypeScript checks via `.github/workflows/lint.yml`. Dependabot monitors `package.json` at root.
 
+## LLM vs. deterministic: an intentional split
+
+Not everything here goes through the LLM agent, on purpose. Only use an LLM where the
+task genuinely requires reasoning over unstructured input — don't route deterministic
+work through it just because the SDK is available.
+
+- **`flows/issue-intake.js`** — a worker reports an issue by texting "issue"; the bot
+  walks them through area -> photo -> description one question at a time. This is a
+  plain step-by-step state machine (in-memory `Map` keyed by `channelId:threadTs`),
+  hooked into `listeners/events/message.js` *before* it falls through to the LLM
+  agent. No LLM call anywhere in this file.
+- **`listeners/commands/broadcast-safety.js`** — the `/broadcast-safety "message"
+  --site=<site>` slash command. The manager already knows exactly what they want to
+  send, so there's no ambiguity for a model to resolve — this is a direct
+  translate -> fan-out-via-Twilio -> ack-tracking flow, no LLM call.
+- **`agent/agent.js`** (the actual LLM-driven part) — a conversational assistant with
+  three tools: `add_emoji_reaction`, `check_for_contradictions`, and
+  `search_workspace_history`. These three genuinely benefit from an LLM: reacting
+  appropriately to open-ended messages, comparing document excerpts for *semantic*
+  contradictions (not something regex can do), and deciding whether a natural-language
+  question is a search request or a spec question.
+- **`lib/contradiction.js#compareSources`** is a standalone prompt-completion call, not
+  routed through the Claude Agent SDK's tool-calling loop — it can use any LLM
+  provider, independent of what `agent/agent.js` uses. Google Gemini's free tier
+  (1,500 req/day on Flash, no credit card) is a practical no-cost choice for this one
+  call, even though `agent/agent.js` itself is tied to Anthropic via the Claude Agent
+  SDK.
+
 ## Architecture
 
-Three-layer design: **app.js** -> **listeners/** -> **agent/**
+Three-layer design for the LLM-driven half: **app.js** -> **listeners/** -> **agent/**.
+The deterministic half (`flows/`, `listeners/commands/`) bypasses `agent/` entirely.
 
 **Entry point (`app.js`)** initializes Bolt with Socket Mode and calls `registerListeners(app)`.
 
 **Listeners** are organized by Slack platform feature:
-- `listeners/events/` -- `app-home-opened` (Home tab view + Messages-tab suggested prompts via `event.tab` branch), `app-mentioned`, `message`
+- `listeners/events/` -- `app-home-opened` (Home tab view + Messages-tab suggested prompts via `event.tab` branch), `app-mentioned`, `message` (checks for the deterministic issue-intake flow before falling through to the LLM agent)
 - `listeners/actions/` -- `feedback-buttons`
+- `listeners/commands/` -- `/broadcast-safety` (fully deterministic, no LLM)
 
 Each sub-module has a `register(app)` function called from `listeners/index.js`.
 

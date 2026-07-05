@@ -1,4 +1,5 @@
 import { runAgent } from '../../agent/index.js';
+import { advanceIssueIntake, hasActiveFlow, isIssueIntakeTrigger } from '../../flows/issue-intake.js';
 import { sessionStore } from '../../thread-context/index.js';
 import { buildFeedbackBlocks } from '../views/feedback-builder.js';
 
@@ -41,6 +42,14 @@ export async function handleMessage({ client, context, event, logger, say, saySt
     const text = event.text || '';
     const threadTs = event.thread_ts || event.ts;
     const userId = /** @type {string} */ (context.userId);
+
+    // Deterministic issue-intake flow — handled entirely without an LLM call,
+    // so check for it before falling through to the general agent below.
+    if (isIssueIntakeTrigger(text) || hasActiveFlow(channelId, threadTs)) {
+      const { reply } = await advanceIssueIntake(channelId, threadTs, text);
+      await say({ text: reply, thread_ts: threadTs });
+      return;
+    }
 
     // Get session ID for conversation context
     const existingSessionId = sessionStore.getSession(channelId, threadTs);
