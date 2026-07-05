@@ -15,7 +15,15 @@
     "bot_user": {
       "display_name": "Starter Agent - Claude SDK (JavaScript)",
       "always_online": true
-    }
+    },
+    "slash_commands": [
+      {
+        "command": "/broadcast-safety",
+        "description": "Broadcast a safety alert via SMS to every worker on a site",
+        "usage_hint": "\"message\" --site=<site>",
+        "should_escape": false
+      }
+    ]
   },
   "oauth_config": {
     "redirect_urls": ["https://ngrok-free.app/slack/oauth_redirect"],

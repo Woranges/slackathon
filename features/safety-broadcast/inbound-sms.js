@@ -1,3 +1,5 @@
+// Owner: safety-broadcast feature.
+//
 // Inbound Twilio webhook — worker SMS replies land here (issue reports,
 // broadcast acknowledgments). Only reachable when running in HTTP mode
 // (app-oauth.js), since Socket Mode (app.js) exposes no inbound HTTP endpoint.
@@ -15,8 +17,9 @@ export async function handleTwilioInboundSms(req, res) {
   // TODO: if this reply is an acknowledgment to an open broadcast, record it
   // (lib/db.js#recordBroadcastAck) and update the live Slack message.
   // TODO: otherwise, treat it as the start (or continuation) of a structured
-  // issue-intake flow and eventually call agent/tools/procore-issue.js's logic,
-  // posting the result into the right Slack channel.
+  // issue-intake flow and eventually call
+  // features/procore-issue-intake/issue-intake.js's logic, posting the
+  // result into the right Slack channel.
 
   res.status(200).type('text/xml').send('<Response></Response>');
 }

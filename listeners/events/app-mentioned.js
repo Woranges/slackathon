@@ -1,5 +1,5 @@
 import { runAgent } from '../../agent/index.js';
-import { sessionStore } from '../../thread-context/index.js';
+import { conversationStore } from '../../thread-context/index.js';
 import { buildFeedbackBlocks } from '../views/feedback-builder.js';
 
 /**
@@ -27,22 +27,22 @@ export async function handleAppMentioned({ client, context, event, logger, say, 
 
     // Set assistant thread status with loading messages
     await setStatus({
-      status: 'Thinking\u2026',
+      status: 'Thinking…',
       loading_messages: [
-        'Teaching the hamsters to type faster\u2026',
-        'Untangling the internet cables\u2026',
-        'Consulting the office goldfish\u2026',
-        'Polishing up the response just for you\u2026',
-        'Convincing the AI to stop overthinking\u2026',
+        'Teaching the hamsters to type faster…',
+        'Untangling the internet cables…',
+        'Consulting the office goldfish…',
+        'Polishing up the response just for you…',
+        'Convincing the AI to stop overthinking…',
       ],
     });
 
-    // Get session ID for conversation context
-    const existingSessionId = sessionStore.getSession(channelId, threadTs);
+    // Get prior conversation history for this thread
+    const existingHistory = conversationStore.getHistory(channelId, threadTs);
 
     // Run the agent with deps for tool access
     const deps = { client, userId, channelId, threadTs, messageTs: event.ts, userToken: context.userToken };
-    const { responseText, sessionId: newSessionId } = await runAgent(cleanedText, existingSessionId ?? undefined, deps);
+    const { responseText, history: newHistory } = await runAgent(cleanedText, existingHistory, deps);
 
     // Stream response in thread with feedback buttons
     const streamer = sayStream();
@@ -50,10 +50,8 @@ export async function handleAppMentioned({ client, context, event, logger, say, 
     const feedbackBlocks = buildFeedbackBlocks();
     await streamer.stop({ blocks: feedbackBlocks });
 
-    // Store session ID for future context
-    if (newSessionId) {
-      sessionStore.setSession(channelId, threadTs, newSessionId);
-    }
+    // Store updated history for future context
+    conversationStore.setHistory(channelId, threadTs, newHistory);
   } catch (e) {
     logger.error(`Failed to handle app mention: ${e}`);
     await say({

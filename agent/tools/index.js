@@ -1,5 +1,3 @@
-export { createContradictionCheckTool } from './contradiction-check.js';
+export { createContradictionCheckTool } from '../../features/knowledge-agent/contradiction-check.js';
+export { createSearchWorkspaceTool } from '../../features/knowledge-agent/search-workspace.js';
 export { createEmojiReactionTool } from './emoji-reaction.js';
-export { createProcoreIssueTool } from './procore-issue.js';
-export { createSafetyBroadcastTool } from './safety-broadcast.js';
-export { createSearchWorkspaceTool } from './search-workspace.js';

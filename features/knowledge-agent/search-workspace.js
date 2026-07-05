@@ -3,10 +3,7 @@
 // the general-purpose search already available through the Slack MCP server,
 // which this project claims as one of the hackathon's three named technologies.
 
-import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
-
-import { searchWorkspace } from '../../lib/rtsEngine.js';
+import { searchWorkspace } from './rts-engine.js';
 
 const DESCRIPTION =
   'Search Slack workspace history via the Real-Time Search (RTS) API — for finding ' +
@@ -16,35 +13,41 @@ const DESCRIPTION =
   'channel context.';
 
 /**
- * @param {import('../agent.js').AgentDeps} [deps]
+ * @param {import('../../agent/agent.js').AgentDeps} [deps]
+ * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 export function createSearchWorkspaceTool(deps) {
-  return tool(
-    'search_workspace_history',
-    DESCRIPTION,
-    {
-      query: z.string().describe('Natural-language search query (e.g. "water damage east stairwell March").'),
+  return {
+    functionDeclaration: {
+      name: 'search_workspace_history',
+      description: DESCRIPTION,
+      parametersJsonSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Natural-language search query (e.g. "water damage east stairwell March").',
+          },
+        },
+        required: ['query'],
+      },
     },
-    async ({ query }) => {
+    handler: async ({ query }) => {
       if (!deps?.userToken) {
-        return {
-          content: [
-            { type: 'text', text: 'Cannot search workspace history: no user token available for this session.' },
-          ],
-        };
+        return { error: 'Cannot search workspace history: no user token available for this session.' };
       }
 
       try {
-        const results = await searchWorkspace(query, deps.userToken);
+        const results = await searchWorkspace(/** @type {string} */ (query), deps.userToken);
         if (results.length === 0) {
-          return { content: [{ type: 'text', text: `No results found for "${query}".` }] };
+          return { output: `No results found for "${query}".` };
         }
         const formatted = results.map((r) => `- ${r.text}${r.permalink ? ` (${r.permalink})` : ''}`).join('\n');
-        return { content: [{ type: 'text', text: formatted }] };
+        return { output: formatted };
       } catch (e) {
         const err = /** @type {any} */ (e);
-        return { content: [{ type: 'text', text: `TODO: RTS search not yet wired up (${err.message})` }] };
+        return { error: `TODO: RTS search not yet wired up (${err.message})` };
       }
     },
-  );
+  };
 }

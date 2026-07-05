@@ -1,3 +1,3 @@
-import { SessionStore } from './store.js';
+import { ConversationStore } from './store.js';
 
-export const sessionStore = new SessionStore();
+export const conversationStore = new ConversationStore();

@@ -1,6 +1,3 @@
-import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
-
 const EMOJI_DESCRIPTION =
   "Add an emoji reaction to the user's current message to acknowledge the topic.\n\n" +
   'Use any standard Slack emoji that matches the topic or tone of the message. ' +
@@ -18,37 +15,45 @@ const EMOJI_DESCRIPTION =
 
 /**
  * @param {import('../agent.js').AgentDeps} [deps]
+ * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 export function createEmojiReactionTool(deps) {
-  return tool(
-    'add_emoji_reaction',
-    EMOJI_DESCRIPTION,
-    { emoji_name: z.string().describe("The Slack emoji name without colons (e.g. 'tada', 'wrench', 'pray').") },
-    async ({ emoji_name }) => {
+  return {
+    functionDeclaration: {
+      name: 'add_emoji_reaction',
+      description: EMOJI_DESCRIPTION,
+      parametersJsonSchema: {
+        type: 'object',
+        properties: {
+          emoji_name: {
+            type: 'string',
+            description: "The Slack emoji name without colons (e.g. 'tada', 'wrench', 'pray').",
+          },
+        },
+        required: ['emoji_name'],
+      },
+    },
+    handler: async ({ emoji_name }) => {
       if (!deps) {
-        return { content: [{ type: 'text', text: 'No deps available to add reaction.' }] };
+        return { error: 'No deps available to add reaction.' };
       }
 
       // Skip ~15% of reactions to feel more natural
       if (Math.random() < 0.15) {
-        return {
-          content: [
-            { type: 'text', text: `Skipped :${emoji_name}: reaction (randomly omitted to avoid over-reacting)` },
-          ],
-        };
+        return { output: `Skipped :${emoji_name}: reaction (randomly omitted to avoid over-reacting)` };
       }
 
       try {
         await deps.client.reactions.add({
           channel: deps.channelId,
           timestamp: deps.messageTs,
-          name: emoji_name,
+          name: /** @type {string} */ (emoji_name),
         });
-        return { content: [{ type: 'text', text: `Reacted with :${emoji_name}:` }] };
+        return { output: `Reacted with :${emoji_name}:` };
       } catch (e) {
         const err = /** @type {any} */ (e);
-        return { content: [{ type: 'text', text: `Could not add reaction: ${err.data?.error || err.message}` }] };
+        return { error: `Could not add reaction: ${err.data?.error || err.message}` };
       }
     },
-  );
+  };
 }
