@@ -46,8 +46,8 @@ export async function handleMessage({ client, context, event, logger, say, saySt
     const threadTs = event.thread_ts || event.ts;
     const userId = /** @type {string} */ (context.userId);
 
-    // Deterministic issue-intake flow — handled entirely without an LLM call,
-    // so check for it before falling through to the general agent below.
+    // Issue-intake flow (its own LLM conversation, separate from the general
+    // agent below) — check for it before falling through.
     if (isIssueIntakeTrigger(text) || hasActiveFlow(channelId, threadTs)) {
       const { reply } = await advanceIssueIntake(channelId, threadTs, text);
       await say({ text: reply, thread_ts: threadTs });
