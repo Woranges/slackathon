@@ -1,8 +1,6 @@
-// Owner: knowledge-agent feature. Checks whether project documents (specs, RFIs,
-// addenda) agree on a topic, via the Procore MCP connection, before answering.
-
-import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { z } from 'zod';
+// Owner: knowledge-agent feature. Checks whether project documents (specs,
+// RFIs, addenda) agree on a topic, via the Procore MCP connection, before
+// answering.
 
 import { compareSources } from '../../lib/contradiction.js';
 
@@ -13,31 +11,34 @@ const DESCRIPTION =
 
 /**
  * @param {import('../agent.js').AgentDeps} [deps]
+ * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 export function createContradictionCheckTool(deps) {
-  return tool(
-    'check_for_contradictions',
-    DESCRIPTION,
-    {
-      topic: z.string().describe('The spec/drawing topic or question to check (e.g. "rebar spacing in zone 3").'),
+  return {
+    functionDeclaration: {
+      name: 'check_for_contradictions',
+      description: DESCRIPTION,
+      parametersJsonSchema: {
+        type: 'object',
+        properties: {
+          topic: {
+            type: 'string',
+            description: 'The spec/drawing topic or question to check (e.g. "rebar spacing in zone 3").',
+          },
+        },
+        required: ['topic'],
+      },
     },
-    async ({ topic }) => {
-      // TODO: retrieve relevant sources for `topic` via the Procore MCP connection
-      // (mcp__procore__*, configured in agent/mcp/procore.js) — e.g. latest drawing
-      // revision, spec section, addenda, prior RFI answers.
+    handler: async ({ topic }) => {
+      // TODO: retrieve relevant sources for `topic` via the Procore MCP
+      // connection (declared in agent/agent.js's mcpServers) — e.g. latest
+      // drawing revision, spec section, addenda, prior RFI answers.
       // TODO: pass retrieved sources to lib/contradiction.js#compareSources.
       const result = await compareSources([]);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: result.hasConflict
-              ? `Contradiction found on "${topic}": ${result.summary}`
-              : `TODO: not yet wired to Procore MCP — no sources checked for "${topic}" yet.`,
-          },
-        ],
-      };
+      return result.hasConflict
+        ? { output: `Contradiction found on "${topic}": ${result.summary}` }
+        : { output: `TODO: not yet wired to Procore MCP — no sources checked for "${topic}" yet.` };
     },
-  );
+  };
 }

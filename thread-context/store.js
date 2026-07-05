@@ -1,13 +1,18 @@
 /**
  * @typedef {Object} StoreEntry
- * @property {string} sessionId
+ * @property {import('@google/genai').Content[]} history
  * @property {number} timestamp
  */
 
 /**
- * In-memory session ID store with TTL-based cleanup.
+ * In-memory conversation-history store with TTL-based cleanup.
+ *
+ * Gemini's chat API doesn't support Claude's server-side session resume by
+ * ID — the caller has to hold and replay the full turn history to continue
+ * a conversation. So unlike a session-ID store, this tracks the actual
+ * `Content[]` array per thread.
  */
-export class SessionStore {
+export class ConversationStore {
   /**
    * @param {number} [ttlSeconds=86400]
    * @param {number} [maxEntries=1000]
@@ -24,29 +29,40 @@ export class SessionStore {
   /**
    * @param {string} channelId
    * @param {string} threadTs
-   * @returns {string | null}
+   * @returns {import('@google/genai').Content[]}
    */
-  getSession(channelId, threadTs) {
+  getHistory(channelId, threadTs) {
     const key = `${channelId}:${threadTs}`;
     const entry = this._store.get(key);
-    if (!entry) return null;
+    if (!entry) return [];
     if (Date.now() - entry.timestamp > this._ttlSeconds * 1000) {
       this._store.delete(key);
-      return null;
+      return [];
     }
-    return entry.sessionId;
+    return entry.history;
+  }
+
+  /**
+   * Whether this thread has any stored history — used, e.g., to decide
+   * whether the bot is already engaged in a channel thread reply.
+   * @param {string} channelId
+   * @param {string} threadTs
+   * @returns {boolean}
+   */
+  hasHistory(channelId, threadTs) {
+    return this.getHistory(channelId, threadTs).length > 0;
   }
 
   /**
    * @param {string} channelId
    * @param {string} threadTs
-   * @param {string} sessionId
+   * @param {import('@google/genai').Content[]} history
    * @returns {void}
    */
-  setSession(channelId, threadTs, sessionId) {
+  setHistory(channelId, threadTs, history) {
     const key = `${channelId}:${threadTs}`;
     this._store.set(key, {
-      sessionId,
+      history,
       timestamp: Date.now(),
     });
     this._cleanup();

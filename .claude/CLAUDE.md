@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A **Starter Agent** for Slack built with Bolt for JavaScript and the **Claude Agent SDK**. This started as Slack's official `bolt-js-starter-agent` sample (which offered both a Claude Agent SDK and an OpenAI Agents SDK implementation side by side); the OpenAI variant has been removed and the Claude Agent SDK app flattened to the repo root, since this repo is committed to a single framework.
+A **Starter Agent** for Slack built with Bolt for JavaScript and **Google Gemini** (via `@google/genai`). This started as Slack's official `bolt-js-starter-agent` sample, which offered a Claude Agent SDK and an OpenAI Agents SDK implementation side by side. Both have since been replaced: the OpenAI variant was removed first, then the Claude Agent SDK layer was rewritten to use Gemini directly, chosen for its free tier (1,500 requests/day on Flash models, no credit card) over Anthropic's/OpenAI's one-time signup credits.
 
-This is a minimal starter template. It includes one example tool (emoji reactions) and optional Slack MCP Server integration.
+On top of the starter template, this repo adds three construction field-operations features — see "LLM vs. deterministic" below for why only one of them is LLM-driven.
 
 ## Commands
 
 ```sh
-# Run the app (requires .env with ANTHROPIC_API_KEY; Slack tokens optional with CLI)
+# Run the app (requires .env with GEMINI_API_KEY; Slack tokens optional with CLI)
 slack run          # via Slack CLI
 node app.js        # directly
 
@@ -31,9 +31,9 @@ npm test
 .github/              # CI workflows and dependabot config
 agent/                # LLM-driven conversational assistant: agent.js, tools/, mcp/
 flows/                 # Deterministic (no-LLM) multi-step conversation flows
-lib/                    # Shared utilities: translate, db, twilio, rtsEngine, contradiction
+lib/                    # Shared utilities: llm/ (Gemini wrapper), translate, db, twilio, rtsEngine, contradiction
 listeners/              # Slack event/action/command/view handlers
-thread-context/         # Session-ID store for the LLM assistant's multi-turn conversations
+thread-context/         # Conversation-history store for the LLM assistant's multi-turn conversations
 tests/                  # Unit tests
 manifest.json            # Slack app manifest (agent_view, MCP, OAuth scopes, slash commands)
 app.js                   # Entry point (Socket Mode)
@@ -46,13 +46,14 @@ CI runs biome lint and TypeScript checks via `.github/workflows/lint.yml`. Depen
 
 Not everything here goes through the LLM agent, on purpose. Only use an LLM where the
 task genuinely requires reasoning over unstructured input — don't route deterministic
-work through it just because the SDK is available.
+work through it just because Gemini is available.
 
 - **`flows/issue-intake.js`** — a worker reports an issue by texting "issue"; the bot
   walks them through area -> photo -> description one question at a time. This is a
   plain step-by-step state machine (in-memory `Map` keyed by `channelId:threadTs`),
   hooked into `listeners/events/message.js` *before* it falls through to the LLM
-  agent. No LLM call anywhere in this file.
+  agent. No LLM call anywhere in this file today — though see the note below, since
+  this is the one place a future LLM upgrade is explicitly anticipated.
 - **`listeners/commands/broadcast-safety.js`** — the `/broadcast-safety "message"
   --site=<site>` slash command. The manager already knows exactly what they want to
   send, so there's no ambiguity for a model to resolve — this is a direct
@@ -64,11 +65,20 @@ work through it just because the SDK is available.
   contradictions (not something regex can do), and deciding whether a natural-language
   question is a search request or a spec question.
 - **`lib/contradiction.js#compareSources`** is a standalone prompt-completion call, not
-  routed through the Claude Agent SDK's tool-calling loop — it can use any LLM
-  provider, independent of what `agent/agent.js` uses. Google Gemini's free tier
-  (1,500 req/day on Flash, no credit card) is a practical no-cost choice for this one
-  call, even though `agent/agent.js` itself is tied to Anthropic via the Claude Agent
-  SDK.
+  routed through the chat/history plumbing in `agent/agent.js` — it can call
+  `@google/genai`'s `generateContent` directly rather than going through `lib/llm/`'s
+  chat-session wrapper.
+
+**Future direction, on purpose:** `flows/issue-intake.js` and
+`listeners/commands/broadcast-safety.js` are deliberately rigid right now (exact-match
+steps, one question at a time) to keep them simple and free to run. The plan is for
+both to eventually call into `lib/llm/` too — e.g. to parse a free-form issue report
+in one message instead of three rigid questions, or to make broadcast acknowledgment
+detection more forgiving than exact string matches. `lib/llm/` is deliberately
+structured as a provider-agnostic layer (`index.js` re-exporting whichever provider
+file, currently `gemini.js`) specifically so it's easy to call from these deterministic
+flows later without re-plumbing anything — don't couple `flows/` or
+`listeners/commands/` directly to `@google/genai`; go through `lib/llm/`.
 
 ## Architecture
 
@@ -86,15 +96,19 @@ Each sub-module has a `register(app)` function called from `listeners/index.js`.
 
 **AgentDeps** carries `client`, `userId`, `channelId`, `threadTs`, `messageTs`, `userToken`. Constructed in each listener handler and passed to the agent at runtime.
 
-**Conversation history** (`thread-context/store.js`) is an in-memory Map keyed by `channelId:threadTs` with TTL-based cleanup (24h) and a max entry limit (1000). The Claude Agent SDK manages conversation history server-side via sessions, so only session IDs need to be tracked locally for resuming conversations via `{ resume: sessionId }`.
+**Conversation history** (`thread-context/store.js`) is an in-memory `Map` keyed by `channelId:threadTs` with TTL-based cleanup (24h) and a max entry limit (1000). Unlike Claude's server-side session resume by ID, Gemini's chat API needs the full turn history replayed on each call, so this stores `Content[]` arrays (via `ConversationStore`), not a session ID.
 
-**Handler flow** (DM, mention): get session ID from store -> run agent -> stream response in thread with feedback blocks -> store updated session ID.
+**Handler flow** (DM, mention): get history from store -> run agent -> stream response in thread with feedback blocks -> store updated history.
 
-## Claude Agent SDK Specifics
+## Gemini Specifics
 
-**Agent (`agent/agent.js`)** uses `query()` async generator from `@anthropic-ai/claude-agent-sdk`. Tools are registered via `createSdkMcpServer()` and passed as `mcpServers` in options, alongside any external MCP servers (e.g. Slack's own MCP server) — both your own tools and external MCP connections live in the same `mcpServers` object. The `runAgent()` function is async and returns `{ responseText, sessionId }`.
+**Agent (`agent/agent.js`)** builds a list of local tools (`agent/tools/`) and MCP server configs (Slack's, and Procore's if `PROCORE_MCP_URL` is set), then calls `lib/llm/`'s `runLlmTurn()` with the system prompt, prior history, and the new message.
 
-**Tools** are defined with `tool()` from `@anthropic-ai/claude-agent-sdk` using Zod schemas. One example tool (emoji reaction) is included. Tools are created as closures inside `runAgent()` to capture `deps`.
+**`lib/llm/gemini.js`** wraps `@google/genai`: creates a chat session via `ai.chats.create({ model, history, config })`, sends the message, and manually dispatches any local function calls (matching by name against the tools passed in) in a loop until the model returns plain text. MCP-declared tools are executed server-side by Gemini directly against the MCP server — they shouldn't need manual dispatch, but this hasn't been exercised against a live API key + real MCP server yet, so double-check that assumption once both exist.
+
+**Tools** are plain objects — `{ functionDeclaration: { name, description, parametersJsonSchema }, handler }` — not Zod schemas (Gemini's function declarations use JSON Schema directly via `parametersJsonSchema`). Tool handlers return `{ output: ... }` on success or `{ error: ... }` on failure, matching Gemini's own documented convention for `FunctionResponse.response`.
+
+**MCP servers** are declared directly as `{ name, streamableHttpTransport: { url, headers } }` on the `Tool.mcpServers` field — no manual `@modelcontextprotocol/sdk` client/transport setup needed, unlike a fully manual MCP client integration. This field is documented as experimental in `@google/genai`.
 
 **Feedback blocks** use the `context_actions` block type with `feedback_buttons` elements. A single `feedback` action ID is registered.
 

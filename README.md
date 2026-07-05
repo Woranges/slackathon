@@ -1,6 +1,8 @@
-# Starter Agent for Slack (Bolt for JavaScript and Claude Agent SDK)
+# Starter Agent for Slack (Bolt for JavaScript and Gemini)
 
-A minimal starter template for building AI-powered Slack agents with [Bolt for JavaScript](https://docs.slack.dev/tools/bolt-js/) and the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/overview) using models from [Anthropic](https://www.anthropic.com). Works with the [Slack MCP Server](https://github.com/slackapi/slack-mcp-server) to search messages, read channels, send messages, and manage canvases — all from within your agent.
+A minimal starter template for building AI-powered Slack agents with [Bolt for JavaScript](https://docs.slack.dev/tools/bolt-js/) and [Google Gemini](https://ai.google.dev/) (via [`@google/genai`](https://www.npmjs.com/package/@google/genai)) — chosen for its free tier (1,500 requests/day on Flash models, no credit card required). Works with the [Slack MCP Server](https://github.com/slackapi/slack-mcp-server) to search messages, read channels, send messages, and manage canvases — all from within your agent.
+
+This repo also adds a set of construction field-operations features on top of the starter template: a deterministic (no-LLM) issue-intake flow, a deterministic `/broadcast-safety` command, and an LLM-driven search + contradiction-checking agent. See `.claude/CLAUDE.md` for why some of this is deliberately *not* routed through the LLM.
 
 ## App Overview
 
@@ -93,16 +95,16 @@ npm install
 
 ## Providers
 
-### Anthropic Setup
+### Gemini Setup
 
-This app uses Claude through the Claude Agent SDK.
+This app uses Google Gemini via `@google/genai`.
 
-1. Create an API key from your [Anthropic dashboard](https://console.anthropic.com/settings/keys).
+1. Create an API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — no credit card needed for the free tier.
 2. Rename `.env.sample` to `.env`.
-3. Save the Anthropic API key to `.env`:
+3. Save the Gemini API key to `.env`:
 
 ```sh
-ANTHROPIC_API_KEY=YOUR_ANTHROPIC_API_KEY
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 ```
 
 ## Development
@@ -283,13 +285,21 @@ Every incoming request is routed to a "listener". This directory groups each lis
 
 ### `/agent`
 
-The `agent.js` file configures the Claude Agent SDK with a system prompt, tools registered via an MCP server, and a `runAgent()` async function that handles sending queries and collecting responses.
+The `agent.js` file configures a Gemini chat session (via `lib/llm/`) with a system prompt, function-calling tools (`agent/tools/`), and MCP servers declared directly in the request (Slack's, and Procore's if configured). `runAgent()` takes the user's text plus prior conversation history and returns the response text along with updated history.
 
-Tools that need Slack API access (emoji reactions) are created as closures inside `runAgent()` that capture the dependencies. Add your own tools to customize the agent for your use case.
+Tool handlers that need Slack API access (emoji reactions) are created as closures that capture the dependencies. Add your own tools in `agent/tools/` to customize the agent for your use case.
+
+### `/lib/llm`
+
+The actual Gemini client wrapper (`gemini.js`) lives here, behind a provider-agnostic `index.js` — swap providers by changing this file's contents without touching call sites in `agent/agent.js`.
 
 ### `/thread-context`
 
-The `store.js` file implements an in-memory session ID store, keyed by channel and thread. The Claude Agent SDK manages conversation history server-side via sessions, so only session IDs need to be tracked locally for resuming conversations. The store has TTL-based cleanup (24 hours) and a max entry limit (1000).
+The `store.js` file implements an in-memory conversation-history store, keyed by channel and thread. Unlike Claude's server-side session resume, Gemini's chat API needs the full turn history replayed on each call, so this stores `Content[]` arrays rather than a session ID. TTL-based cleanup (24 hours) and a max entry limit (1000) apply as before.
+
+### `/flows` and `/listeners/commands`
+
+Deterministic, non-LLM conversation handling — see `.claude/CLAUDE.md` for the reasoning. `flows/issue-intake.js` is a plain step-by-step state machine; `listeners/commands/broadcast-safety.js` is the `/broadcast-safety` slash command.
 
 ## Troubleshooting
 

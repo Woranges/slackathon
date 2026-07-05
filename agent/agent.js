@@ -1,5 +1,4 @@
-import { createSdkMcpServer, query } from '@anthropic-ai/claude-agent-sdk';
-
+import { runLlmTurn } from '../lib/llm/index.js';
 import { getProcoreMcpServerConfig } from './mcp/procore.js';
 import { createContradictionCheckTool, createEmojiReactionTool, createSearchWorkspaceTool } from './tools/index.js';
 
@@ -30,20 +29,6 @@ Pick any Slack emoji that reflects the *topic* or *tone* of the message — be c
 (e.g. \`dog\` for dog topics, \`books\` for learning, \`wave\` for greetings). \
 Vary your picks across a thread; don't repeat the same emoji.
 
-## SLACK MCP SERVER
-You may have access to the Slack MCP Server, which gives you powerful Slack tools \
-beyond your built-in tools. Use them whenever they would help the user.
-
-Available capabilities:
-- **Search**: Search messages and files across public channels, search for channels by name
-- **Read**: Read channel message history, read thread replies, read canvas documents
-- **Write**: Send messages, create draft messages, schedule messages for later
-- **Canvases**: Create, read, and update Slack canvas documents
-
-Use these tools when they can help answer a question or complete a task — for example, \
-searching for relevant messages, checking a channel for context, or creating a canvas. \
-Also use them when the user explicitly asks you to perform a Slack action.
-
 ## FIELD OPERATIONS TOOLS
 You may also have access to two construction field-operations tools:
 - **check_for_contradictions**: verify project documents agree before answering a spec/drawing question
@@ -54,13 +39,14 @@ drawings — if it finds a conflict, say so and flag it for a human rather than 
 Prefer \`search_workspace_history\` over general Slack MCP search when the user is asking \
 to retrieve something specific from history (e.g. "find the photo of...").
 
+You may also have access to the Slack MCP Server (search messages/files, read channel \
+history and threads, send messages, manage canvases) and/or a Procore MCP connection \
+(project documents) — use them whenever they'd help answer a question.
+
 Note: structured issue reporting ("issue") and safety broadcasts (\`/broadcast-safety\`) are \
 handled outside this conversational agent entirely — see flows/issue-intake.js and \
 listeners/commands/broadcast-safety.js. Neither needs an LLM, so don't expect to see them \
 called as tools here.`;
-
-/** @type {string[]} */
-const ALLOWED_TOOLS = ['add_emoji_reaction', 'check_for_contradictions', 'search_workspace_history'];
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
 
@@ -75,63 +61,26 @@ const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
  */
 
 /**
- * Run the agent with the given text and optional session ID.
+ * Run the agent with the given text and prior conversation history.
  * @param {string} text - The user's message text.
- * @param {string} [sessionId] - An existing session ID to resume conversation.
+ * @param {import('@google/genai').Content[]} [history] - Prior turns for this thread (empty for a new conversation).
  * @param {AgentDeps} [deps] - Dependencies for tools that need Slack API access.
- * @returns {Promise<{responseText: string, sessionId: string | null}>}
+ * @returns {Promise<{ responseText: string, history: import('@google/genai').Content[] }>}
  */
-export async function runAgent(text, sessionId = undefined, deps = undefined) {
-  const agentToolsServer = createSdkMcpServer({
-    name: 'agent-tools',
-    version: '1.0.0',
-    tools: [createEmojiReactionTool(deps), createContradictionCheckTool(deps), createSearchWorkspaceTool(deps)],
-  });
+export async function runAgent(text, history = [], deps = undefined) {
+  const tools = [createEmojiReactionTool(deps), createContradictionCheckTool(deps), createSearchWorkspaceTool(deps)];
 
-  /** @type {Record<string, any>} */
-  const mcpServers = { 'agent-tools': agentToolsServer };
-  const allowedTools = [...ALLOWED_TOOLS];
+  /** @type {import('../lib/llm/gemini.js').McpServerConfig[]} */
+  const mcpServers = [];
 
   if (deps?.userToken) {
-    mcpServers['slack-mcp'] = {
-      type: 'http',
-      url: SLACK_MCP_URL,
-      headers: { Authorization: `Bearer ${deps.userToken}` },
-    };
-    allowedTools.push('mcp__slack-mcp__*');
+    mcpServers.push({ name: 'slack-mcp', url: SLACK_MCP_URL, headers: { Authorization: `Bearer ${deps.userToken}` } });
   }
 
   const procoreMcpConfig = getProcoreMcpServerConfig();
   if (procoreMcpConfig) {
-    mcpServers.procore = procoreMcpConfig;
-    allowedTools.push('mcp__procore__*');
+    mcpServers.push(procoreMcpConfig);
   }
 
-  /** @type {import('@anthropic-ai/claude-agent-sdk').Options} */
-  const options = {
-    systemPrompt: SYSTEM_PROMPT,
-    mcpServers,
-    allowedTools,
-    permissionMode: 'bypassPermissions',
-    ...(sessionId && { resume: sessionId }),
-  };
-
-  const responseParts = [];
-  let newSessionId = null;
-
-  for await (const message of query({ prompt: text, options })) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          responseParts.push(block.text);
-        }
-      }
-    }
-    if (message.type === 'result') {
-      newSessionId = message.session_id;
-    }
-  }
-
-  const responseText = responseParts.join('\n');
-  return { responseText, sessionId: newSessionId };
+  return runLlmTurn({ systemPrompt: SYSTEM_PROMPT, history, text, tools, mcpServers });
 }

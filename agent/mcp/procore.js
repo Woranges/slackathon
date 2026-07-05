@@ -1,6 +1,5 @@
-// MCP connection to Procore, used by create_procore_issue and
-// check_for_contradictions. Don't build the MCP protocol layer from scratch —
-// use one of, in order of preference:
+// MCP connection to Procore, used by check_for_contradictions. Don't build
+// the MCP protocol layer from scratch — use one of, in order of preference:
 //   1. Procore's own official MCP setup (developers.procore.com/documentation/procore-ai-edge-mcp-setup)
 //   2. Pipedream's hosted MCP endpoint (mcp.pipedream.com/app/procore)
 //   3. A self-hosted community MCP server, only after reading its source —
@@ -12,16 +11,16 @@ const PROCORE_MCP_URL = process.env.PROCORE_MCP_URL;
 const PROCORE_MCP_TOKEN = process.env.PROCORE_MCP_TOKEN;
 
 /**
- * Build the Procore MCP server config for agent.js's `mcpServers` map.
+ * Build the Procore MCP server config for agent.js's `mcpServers` list.
  * Returns null when not configured, so callers can omit it conditionally
  * (mirrors how the Slack MCP server is only added when a user token exists).
- * @returns {Record<string, any> | null}
+ * @returns {import('../../lib/llm/gemini.js').McpServerConfig | null}
  */
 export function getProcoreMcpServerConfig() {
   if (!PROCORE_MCP_URL) return null;
 
   return {
-    type: 'http',
+    name: 'procore',
     url: PROCORE_MCP_URL,
     ...(PROCORE_MCP_TOKEN && { headers: { Authorization: `Bearer ${PROCORE_MCP_TOKEN}` } }),
   };
