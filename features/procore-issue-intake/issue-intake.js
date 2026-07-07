@@ -8,8 +8,11 @@
 // on messages that were never going to start this flow); everything after
 // that goes through lib/llm/ once triggered.
 
+import { getWorkerByPhone } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
+import { buildIssueCardBlocks } from './issue-card.js';
+import { buildIssueRecord } from './issue-record.js';
 
 const SYSTEM_PROMPT = `\
 You are helping a construction worker report a site issue over text messaging.
@@ -87,29 +90,56 @@ function wasFileIssueCalled(history) {
 }
 
 /**
- * Advance the issue-intake flow by one message.
+ * Optional real-world context for the reporter, supplied by the SMS path so the
+ * filed record can name the worker/site and carry an inbound photo. The Slack
+ * path omits it (no phone), and the flow still works with an "Unknown worker".
+ * @typedef {Object} IntakeContext
+ * @property {string} [phone] - Reporter phone (E.164), e.g. the Twilio `From`.
+ * @property {string | null} [photoUrl] - Photo from an inbound MMS/WhatsApp message.
+ */
+
+/**
+ * Advance the issue-intake flow by one message. When `file_issue` fires this
+ * assembles the structured record (issue-record.js) and management-card blocks
+ * (issue-card.js) and returns them; posting the card / writing to Procore is
+ * wired by the caller, not here.
  * @param {string} channelId
  * @param {string} threadTs
  * @param {string} text
- * @returns {Promise<{ reply: string, done: boolean }>}
+ * @param {IntakeContext} [context]
+ * @returns {Promise<{ reply: string, done: boolean, record?: import('./issue-record.js').IssueRecord, cardBlocks?: import('@slack/types').KnownBlock[] }>}
  */
-export async function advanceIssueIntake(channelId, threadTs, text) {
+export async function advanceIssueIntake(channelId, threadTs, text, context = {}) {
   const k = key(channelId, threadTs);
   const history = activeFlows.get(k) ?? [];
 
+  /** @type {import('./issue-record.js').IssueRecord | undefined} */
+  let filedRecord;
+  /** @type {import('@slack/types').KnownBlock[] | undefined} */
+  let filedCardBlocks;
+
   const fileIssueTool = createFileIssueTool(async ({ area, description, photo_url }) => {
-    // TODO: translate using the reporter's actual preferred_language once
-    // captured (lib/db.js#getWorkerByPhone); defaulting to a pass-through
-    // until per-worker language lookup is wired up here.
+    const worker = context.phone ? await getWorkerByPhone(context.phone) : null;
+
+    // TODO: translate into English using the reporter's preferred_language
+    // (worker?.preferredLanguage) once translate.js is wired; passthrough today.
     const englishDescription = await translateText(description, 'en');
 
-    // TODO: write to Procore via the MCP connection (agent/mcp/procore.js) —
-    // e.g. mcp__procore__create_rfi with { area, photo_url, description: englishDescription }.
-    // TODO: post a Slack card with Assign/Escalate/Resolve buttons (see
-    // listeners/actions/ for the interactive-component pattern) instead of a
-    // plain text reply.
+    const record = buildIssueRecord({
+      phone: context.phone ?? 'unknown',
+      worker,
+      area,
+      description: englishDescription,
+      photoUrl: photo_url ?? context.photoUrl ?? null,
+    });
+    filedRecord = record;
+    filedCardBlocks = buildIssueCardBlocks(record);
+
+    // TODO: post filedCardBlocks to the management channel
+    // (client.chat.postMessage to MANAGEMENT_CHANNEL_ID) and write the record to
+    // Procore (REST sandbox) — both wired in the caller once shared plumbing lands.
     return {
-      output: `Filed: area="${area}", photo=${photo_url ?? 'none'}, description="${englishDescription}" (TODO: not yet wired to Procore).`,
+      output: `Filed issue: area="${record.area}", reporter="${record.reporter.name}", photo=${record.photoUrl ?? 'none'} (card + Procore write not yet posted live).`,
     };
   });
 
@@ -127,5 +157,5 @@ export async function advanceIssueIntake(channelId, threadTs, text) {
     activeFlows.set(k, newHistory);
   }
 
-  return { reply: responseText, done };
+  return { reply: responseText, done, record: filedRecord, cardBlocks: filedCardBlocks };
 }
