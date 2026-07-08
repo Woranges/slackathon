@@ -12,5 +12,8 @@ import { handleTwilioInboundSms } from '../../features/safety-broadcast/inbound-
  */
 export function registerWebhooks(app) {
   const receiver = /** @type {import('@slack/bolt').ExpressReceiver} */ (app.receiver);
-  receiver.router.post('/twilio/sms', express.urlencoded({ extended: false }), handleTwilioInboundSms);
+  // Pass the bot's Slack client so the inbound handler can post the issue card.
+  receiver.router.post('/twilio/sms', express.urlencoded({ extended: false }), (req, res) =>
+    handleTwilioInboundSms(req, res, app.client),
+  );
 }

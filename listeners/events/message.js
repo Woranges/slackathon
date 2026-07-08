@@ -1,4 +1,5 @@
 import { runAgent } from '../../agent/index.js';
+import { postIssueCard } from '../../features/procore-issue-intake/issue-card.js';
 import {
   advanceIssueIntake,
   hasActiveFlow,
@@ -49,8 +50,13 @@ export async function handleMessage({ client, context, event, logger, say, saySt
     // Issue-intake flow (its own LLM conversation, separate from the general
     // agent below) — check for it before falling through.
     if (isIssueIntakeTrigger(text) || hasActiveFlow(channelId, threadTs)) {
-      const { reply } = await advanceIssueIntake(channelId, threadTs, text);
+      const { reply, done, record } = await advanceIssueIntake(channelId, threadTs, text);
       await say({ text: reply, thread_ts: threadTs });
+      // Once the issue is filed, post the card to the management channel.
+      if (done && record) {
+        const result = await postIssueCard(client, record);
+        if (!result.posted) logger.info(`Issue filed but card not posted: ${result.reason}`);
+      }
       return;
     }
 
