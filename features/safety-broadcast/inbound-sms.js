@@ -10,6 +10,12 @@
 
 import { recordBroadcastAck } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
+import { postIssueCard } from '../procore-issue-intake/issue-card.js';
+import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
+
+// Issue-intake conversations over SMS are keyed by phone number; this stands in
+// for the Slack thread key that the same flow uses in the DM path.
+const SMS_THREAD = 'sms';
 
 const CLASSIFY_SYSTEM_PROMPT = `\
 Classify an incoming worker SMS reply to a construction site. Always call classify_reply — \
@@ -60,27 +66,72 @@ async function classifyReply(text) {
 }
 
 /**
- * @param {import('express').Request} req
+ * Escape text for inclusion in a TwiML XML body.
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeXml(s) {
+  return String(s).replace(
+    /[<>&'"]/g,
+    (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c] ?? c,
+  );
+}
+
+/**
+ * Advance the issue-intake flow for this phone and reply over SMS. Posts the
+ * management card once the issue is filed.
+ * @param {string} from - Reporter phone (E.164).
+ * @param {string} body - The inbound message text.
+ * @param {string | null} photoUrl - Twilio MediaUrl0, if any.
+ * @param {import('@slack/web-api').WebClient} client
  * @param {import('express').Response} res
  * @returns {Promise<void>}
  */
-export async function handleTwilioInboundSms(req, res) {
+async function runIssueIntake(from, body, photoUrl, client, res) {
+  const { reply, done, record } = await advanceIssueIntake(from, SMS_THREAD, body, { phone: from, photoUrl });
+  if (done && record) await postIssueCard(client, record);
+  res
+    .status(200)
+    .type('text/xml')
+    .send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
+}
+
+/**
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('@slack/web-api').WebClient} client - Bot client, for posting the issue card.
+ * @returns {Promise<void>}
+ */
+export async function handleTwilioInboundSms(req, res, client) {
   const from = req.body?.From;
   const body = req.body?.Body ?? '';
+  const photoUrl = req.body?.MediaUrl0 ?? null;
 
-  const intent = await classifyReply(body);
+  try {
+    // An in-progress issue-intake conversation for this phone takes precedence
+    // over reply classification — keep advancing it until the issue is filed.
+    if (from && hasActiveFlow(from, SMS_THREAD)) {
+      await runIssueIntake(from, body, photoUrl, client, res);
+      return;
+    }
 
-  if (intent === 'acknowledgment') {
-    // TODO: look up the actually-open broadcast for this worker/site instead
-    // of a hardcoded placeholder ID, once lib/db.js's broadcast table exists.
-    await recordBroadcastAck('TODO-broadcast-id', from);
-    // TODO: update the live Slack message ("38/45 acknowledged") via client.chat.update.
-  } else if (intent === 'issue_report') {
-    // TODO: route into features/procore-issue-intake/issue-intake.js's
-    // advanceIssueIntake, keyed by this worker's phone rather than a Slack
-    // channelId/threadTs — needs a phone-to-thread mapping in lib/db.js first.
+    const intent = await classifyReply(body);
+
+    if (intent === 'acknowledgment') {
+      // TODO: look up the actually-open broadcast for this worker/site instead
+      // of a hardcoded placeholder ID, once lib/db.js's broadcast table exists.
+      await recordBroadcastAck('TODO-broadcast-id', from);
+      // TODO: update the live Slack message ("38/45 acknowledged") via client.chat.update.
+    } else if (intent === 'issue_report' && from) {
+      await runIssueIntake(from, body, photoUrl, client, res);
+      return;
+    }
+    // "other" — no action; TODO: consider a fallback reply if this happens often.
+
+    res.status(200).type('text/xml').send('<Response></Response>');
+  } catch (e) {
+    console.error(`Failed to handle inbound SMS: ${e}`);
+    // Always return valid TwiML so Twilio doesn't retry a hard failure.
+    res.status(200).type('text/xml').send('<Response></Response>');
   }
-  // "other" — no action; TODO: consider a fallback reply if this happens often.
-
-  res.status(200).type('text/xml').send('<Response></Response>');
 }
