@@ -86,3 +86,24 @@ export function buildIssueCardBlocks(record) {
 
   return blocks;
 }
+
+/**
+ * Post the issue card to the management channel. Reads MANAGEMENT_CHANNEL_ID at
+ * call time and skips gracefully (no throw) when it isn't set, so the intake
+ * flow still completes without a channel configured.
+ * @param {import('@slack/web-api').WebClient} client
+ * @param {IssueRecord} record
+ * @returns {Promise<{ posted: boolean, channel?: string, ts?: string, reason?: string }>}
+ */
+export async function postIssueCard(client, record) {
+  const channel = process.env.MANAGEMENT_CHANNEL_ID;
+  if (!channel) return { posted: false, reason: 'MANAGEMENT_CHANNEL_ID not set' };
+
+  const res = await client.chat.postMessage({
+    channel,
+    // Fallback text shown in notifications / clients that can't render blocks.
+    text: `New site issue reported: ${record.area}`,
+    blocks: buildIssueCardBlocks(record),
+  });
+  return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
+}

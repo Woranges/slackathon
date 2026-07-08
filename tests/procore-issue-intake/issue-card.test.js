@@ -1,11 +1,12 @@
 import assert from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 
 import {
   buildIssueCardBlocks,
   ISSUE_ASSIGN_ACTION,
   ISSUE_ESCALATE_ACTION,
   ISSUE_RESOLVED_ACTION,
+  postIssueCard,
 } from '../../features/procore-issue-intake/issue-card.js';
 
 /** @type {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} */
@@ -53,5 +54,42 @@ describe('buildIssueCardBlocks', () => {
     const text = JSON.stringify(buildIssueCardBlocks(record));
     assert.ok(text.includes('3rd floor, east stairwell'));
     assert.ok(text.includes('Loose handrail'));
+  });
+});
+
+describe('postIssueCard', () => {
+  afterEach(() => {
+    delete process.env.MANAGEMENT_CHANNEL_ID;
+  });
+
+  /** Fake Slack client that records postMessage calls. */
+  function fakeClient(calls) {
+    return {
+      chat: {
+        postMessage: async (args) => {
+          calls.push(args);
+          return { ts: '1700000000.000100' };
+        },
+      },
+    };
+  }
+
+  it('skips (no throw) when MANAGEMENT_CHANNEL_ID is unset', async () => {
+    const calls = [];
+    const result = await postIssueCard(fakeClient(calls), record);
+    assert.strictEqual(result.posted, false);
+    assert.strictEqual(calls.length, 0);
+  });
+
+  it('posts blocks + fallback text to the configured channel', async () => {
+    process.env.MANAGEMENT_CHANNEL_ID = 'C123MGMT';
+    const calls = [];
+    const result = await postIssueCard(fakeClient(calls), record);
+    assert.strictEqual(result.posted, true);
+    assert.strictEqual(result.channel, 'C123MGMT');
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].channel, 'C123MGMT');
+    assert.ok(Array.isArray(calls[0].blocks));
+    assert.match(calls[0].text, /New site issue reported/);
   });
 });
