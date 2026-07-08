@@ -9,10 +9,13 @@
 // handlers can text the worker back without a lookup. Once issues are persisted
 // (and get a Procore/DB id), switch `value` to that id and look the record up.
 //
-// NOTE: an `image` block needs a publicly fetchable `image_url`. Twilio media
-// URLs are auth-protected, so the caller must re-host / re-upload the photo
-// before putting its URL here (see the design doc's photo caveat) — this builder
-// just includes the block when given a usable URL.
+// Photos: a texted photo's Twilio media URL is auth-protected, so it can't be
+// rendered via a plain image_url. postIssueCard() re-uploads it to Slack (see
+// issue-photo.js) and passes the resulting file id here, which renders inline
+// via `slack_file`. When only a public image_url is available (or the re-upload
+// fails), the builder falls back to image_url.
+
+import { uploadPhotoToSlack } from './issue-photo.js';
 
 /**
  * @typedef {import('./issue-record.js').IssueRecord} IssueRecord
@@ -24,9 +27,11 @@ export const ISSUE_RESOLVED_ACTION = 'issue_resolved';
 
 /**
  * @param {IssueRecord} record
+ * @param {{ slackFileId?: string | null }} [opts] - A Slack file id to render the
+ *   photo inline via `slack_file`; falls back to record.photoUrl when absent.
  * @returns {import('@slack/types').KnownBlock[]}
  */
-export function buildIssueCardBlocks(record) {
+export function buildIssueCardBlocks(record, opts = {}) {
   const value = record.reporter.phone;
 
   /** @type {import('@slack/types').KnownBlock[]} */
@@ -50,7 +55,15 @@ export function buildIssueCardBlocks(record) {
     },
   ];
 
-  if (record.photoUrl) {
+  if (opts.slackFileId) {
+    blocks.push(
+      /** @type {import('@slack/types').ImageBlock} */ ({
+        type: 'image',
+        slack_file: { id: opts.slackFileId },
+        alt_text: 'Photo of the reported issue',
+      }),
+    );
+  } else if (record.photoUrl) {
     blocks.push({
       type: 'image',
       image_url: record.photoUrl,
@@ -99,11 +112,15 @@ export async function postIssueCard(client, record) {
   const channel = process.env.MANAGEMENT_CHANNEL_ID;
   if (!channel) return { posted: false, reason: 'MANAGEMENT_CHANNEL_ID not set' };
 
+  // Re-upload the photo to Slack so it renders inline (Twilio URLs are
+  // auth-protected). Best-effort — a null id just omits the inline image.
+  const slackFileId = record.photoUrl ? await uploadPhotoToSlack(client, record.photoUrl) : null;
+
   const res = await client.chat.postMessage({
     channel,
     // Fallback text shown in notifications / clients that can't render blocks.
     text: `New site issue reported: ${record.area}`,
-    blocks: buildIssueCardBlocks(record),
+    blocks: buildIssueCardBlocks(record, { slackFileId }),
   });
   return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
 }

@@ -50,6 +50,14 @@ describe('buildIssueCardBlocks', () => {
     assert.strictEqual(image.image_url, 'https://example.com/p.jpg');
   });
 
+  it('renders an uploaded photo inline via slack_file, preferring it over the url', () => {
+    const blocks = buildIssueCardBlocks({ ...record, photoUrl: 'https://example.com/p.jpg' }, { slackFileId: 'F999' });
+    const image = blocks.find((b) => b.type === 'image');
+    assert.ok(image, 'expected an image block');
+    assert.deepStrictEqual(image.slack_file, { id: 'F999' });
+    assert.strictEqual(image.image_url, undefined);
+  });
+
   it('renders the area and description in the card text', () => {
     const text = JSON.stringify(buildIssueCardBlocks(record));
     assert.ok(text.includes('3rd floor, east stairwell'));
