@@ -50,7 +50,16 @@ export async function handleMessage({ client, context, event, logger, say, saySt
     // Issue-intake flow (its own LLM conversation, separate from the general
     // agent below) — check for it before falling through.
     if (isIssueIntakeTrigger(text) || hasActiveFlow(channelId, threadTs)) {
-      const { reply, done, record } = await advanceIssueIntake(channelId, threadTs, text);
+      // Capture a photo attached in the DM (already Slack-hosted → use its file id).
+      const imageFile = event.files?.find((f) => f.mimetype?.startsWith('image/'));
+      const photoSlackFileId = imageFile?.id ?? null;
+      // If only a photo was sent (no text), nudge the model so it knows.
+      const intakeText = text || (photoSlackFileId ? '[photo attached]' : text);
+
+      const { reply, done, record } = await advanceIssueIntake(channelId, threadTs, intakeText, {
+        slackUserId: userId,
+        photoSlackFileId,
+      });
       await say({ text: reply, thread_ts: threadTs });
       // Once the issue is filed, post the card to the management channel.
       if (done && record) {

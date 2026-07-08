@@ -35,6 +35,33 @@ describe('buildIssueRecord', () => {
     assert.strictEqual(record.siteId, null);
   });
 
+  it('uses a Slack mention for the name when only a slackUserId is given', () => {
+    const record = buildIssueRecord({
+      phone: 'unknown',
+      worker: null,
+      slackUserId: 'U123ABC',
+      area: 'A',
+      description: 'B',
+    });
+    assert.strictEqual(record.reporter.name, '<@U123ABC>');
+  });
+
+  it('prefers the worker name over the slackUserId mention', () => {
+    const record = buildIssueRecord({
+      phone: worker.phone,
+      worker,
+      slackUserId: 'U123ABC',
+      area: 'A',
+      description: 'B',
+    });
+    assert.strictEqual(record.reporter.name, 'Mike Alvarez');
+  });
+
+  it('carries a photoSlackFileId when provided', () => {
+    const record = buildIssueRecord({ phone: 'unknown', area: 'A', description: 'B', photoSlackFileId: 'F123' });
+    assert.strictEqual(record.photoSlackFileId, 'F123');
+  });
+
   it('defaults optional photo and geotag to null', () => {
     const record = buildIssueRecord({ phone: '+15555550101', worker, area: 'A', description: 'B' });
     assert.strictEqual(record.photoUrl, null);

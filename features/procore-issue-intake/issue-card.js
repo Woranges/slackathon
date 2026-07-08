@@ -33,6 +33,10 @@ export const ISSUE_RESOLVED_ACTION = 'issue_resolved';
  */
 export function buildIssueCardBlocks(record, opts = {}) {
   const value = record.reporter.phone;
+  // Render the timestamp in each viewer's own locale/timezone via Slack's date
+  // token, falling back to the raw ISO string in clients that can't format it.
+  const reportedAtUnix = Math.floor(new Date(record.timestamp).getTime() / 1000);
+  const reportedAt = `<!date^${reportedAtUnix}^{date_short_pretty} at {time}|${record.timestamp}>`;
 
   /** @type {import('@slack/types').KnownBlock[]} */
   const blocks = [
@@ -46,7 +50,7 @@ export function buildIssueCardBlocks(record, opts = {}) {
         { type: 'mrkdwn', text: `*Area:*\n${record.area}` },
         { type: 'mrkdwn', text: `*Reported by:*\n${record.reporter.name}` },
         { type: 'mrkdwn', text: `*Site:*\n${record.siteId ?? '—'}` },
-        { type: 'mrkdwn', text: `*Reported at:*\n${record.timestamp}` },
+        { type: 'mrkdwn', text: `*Reported at:*\n${reportedAt}` },
       ],
     },
     {
@@ -112,9 +116,11 @@ export async function postIssueCard(client, record) {
   const channel = process.env.MANAGEMENT_CHANNEL_ID;
   if (!channel) return { posted: false, reason: 'MANAGEMENT_CHANNEL_ID not set' };
 
-  // Re-upload the photo to Slack so it renders inline (Twilio URLs are
-  // auth-protected). Best-effort — a null id just omits the inline image.
-  const slackFileId = record.photoUrl ? await uploadPhotoToSlack(client, record.photoUrl) : null;
+  // Prefer a photo already hosted in Slack (uploaded in a DM); otherwise
+  // re-upload an external URL (e.g. a Twilio media URL, which is auth-protected).
+  // Best-effort — a null id just omits the inline image.
+  const slackFileId =
+    record.photoSlackFileId ?? (record.photoUrl ? await uploadPhotoToSlack(client, record.photoUrl) : null);
 
   const res = await client.chat.postMessage({
     channel,

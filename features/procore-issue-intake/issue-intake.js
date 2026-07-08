@@ -9,7 +9,7 @@
 // that goes through lib/llm/ once triggered.
 
 import { createProcoreRfi, isProcoreConfigured } from '../../agent/mcp/procore.js';
-import { getWorkerByPhone } from '../../lib/db.js';
+import { getWorkerByPhone, getWorkerBySlackUserId } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
 import { buildIssueCardBlocks } from './issue-card.js';
@@ -22,13 +22,14 @@ Gather two required pieces of information:
 - area: the location/area of the issue (e.g. "3rd floor, east stairwell")
 - description: a one-line description of the problem
 
-A photo is optional — if they mention or link one, capture its URL, but never require it.
-
 Ask short, casual follow-up questions for whatever's missing. If the worker already gave \
 you multiple pieces of information in one message, don't force them through a rigid \
-one-field-at-a-time order — just ask about whatever's still missing. Once you have both \
-area and description, call the file_issue tool immediately with what you have — don't ask \
-for confirmation first.`;
+one-field-at-a-time order — just ask about whatever's still missing.
+
+Once you have BOTH area and description, ask once if they can send a photo of the issue \
+(a photo is helpful but optional). On their next reply — whether they send/mention a photo, \
+decline, or ignore it — call the file_issue tool immediately with what you have. Never \
+require a photo, never ask for it more than once, and don't ask for confirmation.`;
 
 /**
  * @param {(args: { area: string, description: string, photo_url?: string }) => Promise<Record<string, unknown>>} onFileIssue
@@ -96,7 +97,9 @@ function wasFileIssueCalled(history) {
  * path omits it (no phone), and the flow still works with an "Unknown worker".
  * @typedef {Object} IntakeContext
  * @property {string} [phone] - Reporter phone (E.164), e.g. the Twilio `From`.
+ * @property {string} [slackUserId] - Reporter's Slack user id (DM path), for identity/site.
  * @property {string | null} [photoUrl] - Photo from an inbound MMS/WhatsApp message.
+ * @property {string | null} [photoSlackFileId] - Photo already uploaded in a Slack DM.
  */
 
 /**
@@ -108,7 +111,7 @@ function wasFileIssueCalled(history) {
  * @param {string} threadTs
  * @param {string} text
  * @param {IntakeContext} [context]
- * @returns {Promise<{ reply: string, done: boolean, record?: import('./issue-record.js').IssueRecord, cardBlocks?: import('@slack/types').KnownBlock[], procore?: { id: number, url: string | null } }>}
+ * @returns {Promise<{ reply: string, done: boolean, record?: import('./issue-record.js').IssueRecord, cardBlocks?: import('@slack/types').KnownBlock[] }>}
  */
 export async function advanceIssueIntake(channelId, threadTs, text, context = {}) {
   const k = key(channelId, threadTs);
@@ -118,11 +121,12 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
   let filedRecord;
   /** @type {import('@slack/types').KnownBlock[] | undefined} */
   let filedCardBlocks;
-  /** @type {{ id: number, url: string | null } | undefined} */
-  let filedProcore;
 
   const fileIssueTool = createFileIssueTool(async ({ area, description, photo_url }) => {
-    const worker = context.phone ? await getWorkerByPhone(context.phone) : null;
+    // Resolve the reporter: by phone (SMS path) or Slack user id (DM path).
+    const worker =
+      (context.phone ? await getWorkerByPhone(context.phone) : null) ??
+      (context.slackUserId ? await getWorkerBySlackUserId(context.slackUserId) : null);
 
     // TODO: translate into English using the reporter's preferred_language
     // (worker?.preferredLanguage) once translate.js is wired; passthrough today.
@@ -131,29 +135,26 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
     const record = buildIssueRecord({
       phone: context.phone ?? 'unknown',
       worker,
+      slackUserId: context.slackUserId,
       area,
       description: englishDescription,
       photoUrl: photo_url ?? context.photoUrl ?? null,
+      photoSlackFileId: context.photoSlackFileId ?? null,
     });
     filedRecord = record;
     filedCardBlocks = buildIssueCardBlocks(record);
 
-    // Write to Procore when the sandbox is configured; otherwise skip so the flow
-    // still completes without credentials. TODO: also post filedCardBlocks to the
-    // management channel (client.chat.postMessage to MANAGEMENT_CHANNEL_ID) —
-    // wired in the caller, where the Slack client is available.
-    let procoreNote = 'Procore not configured — skipped write';
+    // Fire-and-forget the Procore write so the worker's confirmation isn't
+    // delayed by the round-trip; log the outcome. Skipped when unconfigured.
     if (isProcoreConfigured()) {
-      try {
-        filedProcore = await createProcoreRfi(record);
-        procoreNote = `Procore RFI #${filedProcore.id} created`;
-      } catch (err) {
-        procoreNote = `Procore write failed: ${err instanceof Error ? err.message : String(err)}`;
-      }
+      createProcoreRfi(record)
+        .then((r) => console.log(`Procore RFI #${r.id} created`))
+        .catch((err) => console.error(`Procore write failed: ${err instanceof Error ? err.message : String(err)}`));
     }
 
+    const hasPhoto = Boolean(record.photoUrl || record.photoSlackFileId);
     return {
-      output: `Filed issue: area="${record.area}", reporter="${record.reporter.name}", photo=${record.photoUrl ?? 'none'}. ${procoreNote}. (Slack card not yet posted live.)`,
+      output: `Filed issue: area="${record.area}", reporter="${record.reporter.name}", photo=${hasPhoto ? 'yes' : 'none'}.`,
     };
   });
 
@@ -171,5 +172,5 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
     activeFlows.set(k, newHistory);
   }
 
-  return { reply: responseText, done, record: filedRecord, cardBlocks: filedCardBlocks, procore: filedProcore };
+  return { reply: responseText, done, record: filedRecord, cardBlocks: filedCardBlocks };
 }
