@@ -27,3 +27,130 @@ export function getProcoreMcpServerConfig() {
     ...(PROCORE_MCP_TOKEN && { headers: { Authorization: `Bearer ${PROCORE_MCP_TOKEN}` } }),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Procore REST client (developer sandbox path).
+//
+// The write-back for issue-intake talks to Procore's REST API directly rather
+// than the MCP config above: we chose the free developer sandbox, which is a
+// plain OAuth2 + HTTPS API. Auth uses the *client-credentials* grant (a
+// server-to-server "Data Connection" app — no user redirect), so no 3-legged
+// OAuth flow is needed.
+//
+// Env is read inside the functions (not at module load) so it can be set/changed
+// at runtime and unit-tested. Everything degrades gracefully: when the vars
+// aren't set, isProcoreConfigured() is false and callers skip the write.
+//
+// CAVEAT: the exact endpoints, the RFI payload shape, and the token host below
+// are best-effort and UNVERIFIED against a live sandbox — confirm them against
+// developers.procore.com once credentials exist, then adjust buildRfiPayload +
+// the URLs. They're deliberately kept in this one place for easy correction.
+
+/**
+ * @returns {{ baseUrl?: string, authUrl?: string, clientId?: string, clientSecret?: string, companyId?: string, projectId?: string }}
+ */
+function procoreEnv() {
+  return {
+    baseUrl: process.env.PROCORE_BASE_URL, // e.g. https://sandbox.procore.com
+    authUrl: process.env.PROCORE_AUTH_URL, // e.g. https://login-sandbox.procore.com/oauth/token
+    clientId: process.env.PROCORE_CLIENT_ID,
+    clientSecret: process.env.PROCORE_CLIENT_SECRET,
+    companyId: process.env.PROCORE_COMPANY_ID,
+    projectId: process.env.PROCORE_PROJECT_ID,
+  };
+}
+
+/**
+ * True when every var needed to create an RFI is present.
+ * @returns {boolean}
+ */
+export function isProcoreConfigured() {
+  const e = procoreEnv();
+  return Boolean(e.baseUrl && e.clientId && e.clientSecret && e.companyId && e.projectId);
+}
+
+/**
+ * Map a structured issue record to a Procore RFI create payload. Pure — no I/O.
+ * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
+ * @returns {Record<string, unknown>}
+ */
+export function buildRfiPayload(record) {
+  const lines = [
+    record.description,
+    '',
+    `Reported by: ${record.reporter.name} (${record.reporter.phone})`,
+    record.siteId ? `Site: ${record.siteId}` : null,
+    record.geotag ? `Location: ${record.geotag.lat}, ${record.geotag.lng}` : null,
+    record.photoUrl ? `Photo: ${record.photoUrl}` : null,
+    `Reported at: ${record.timestamp}`,
+  ].filter((l) => l !== null);
+
+  return {
+    rfi: {
+      subject: `Field issue: ${record.area}`,
+      questions: [{ body: lines.join('\n') }],
+    },
+  };
+}
+
+/** @type {{ accessToken: string, expiresAt: number } | null} */
+let cachedToken = null;
+
+/**
+ * Fetch (and briefly cache) an access token via the client-credentials grant.
+ * @returns {Promise<string>}
+ */
+async function getAccessToken() {
+  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) {
+    return cachedToken.accessToken;
+  }
+  const e = procoreEnv();
+  const authUrl = e.authUrl ?? `${e.baseUrl}/oauth/token`;
+  const res = await fetch(authUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'client_credentials',
+      client_id: e.clientId,
+      client_secret: e.clientSecret,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Procore auth failed: ${res.status} ${await res.text()}`);
+  }
+  const json = /** @type {{ access_token: string, expires_in?: number }} */ (await res.json());
+  cachedToken = {
+    accessToken: json.access_token,
+    expiresAt: Date.now() + (json.expires_in ?? 7200) * 1000,
+  };
+  return cachedToken.accessToken;
+}
+
+/**
+ * Create an RFI in Procore from a structured issue record.
+ * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
+ * @returns {Promise<{ id: number, url: string | null }>}
+ */
+export async function createProcoreRfi(record) {
+  if (!isProcoreConfigured()) {
+    throw new Error(
+      'Procore not configured — set PROCORE_BASE_URL / _CLIENT_ID / _CLIENT_SECRET / _COMPANY_ID / _PROJECT_ID.',
+    );
+  }
+  const e = procoreEnv();
+  const token = await getAccessToken();
+  const res = await fetch(`${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Procore-Company-Id': String(e.companyId),
+    },
+    body: JSON.stringify(buildRfiPayload(record)),
+  });
+  if (!res.ok) {
+    throw new Error(`Procore RFI create failed: ${res.status} ${await res.text()}`);
+  }
+  const json = /** @type {{ id: number, html_url?: string }} */ (await res.json());
+  return { id: json.id, url: json.html_url ?? null };
+}
