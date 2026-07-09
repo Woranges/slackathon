@@ -7,10 +7,10 @@
 // avoid 10-2, downtown site"), handling that variation better than a fixed
 // regex would.
 
-import { createBroadcast, getWorkersBySite, setBroadcastMessage } from '../../lib/db.js';
+import { createBroadcast, getWorkersBySite, hasAcked, setBroadcastMessage } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
-import { sendSms } from '../../lib/twilio.js';
+import { placeEscalationCall, sendSms } from '../../lib/twilio.js';
 
 const PARSE_SYSTEM_PROMPT = `\
 Extract the safety broadcast message and site identifier from a construction manager's \
@@ -69,6 +69,31 @@ export function formatBroadcastStatus({ site, message, acknowledged, total }) {
 }
 
 /**
+ * Voice-call every worker who has NOT acknowledged a broadcast. Runs after the
+ * escalation window elapses. Each call is wrapped so one failure (a bad number,
+ * or Twilio being unconfigured) doesn't stop the rest — an escalation should
+ * reach as many non-responders as possible.
+ * @param {import('../../lib/db.js').Broadcast} broadcast
+ * @param {import('../../lib/db.js').Worker[]} workers - Workers the broadcast was sent to.
+ * @param {{ placeCall?: (to: string, message: string) => Promise<void> }} [deps]
+ *   placeCall is injectable so escalation can be tested without hitting Twilio.
+ * @returns {Promise<number>} How many escalation calls succeeded.
+ */
+export async function escalateUnacknowledged(broadcast, workers, { placeCall = placeEscalationCall } = {}) {
+  let called = 0;
+  for (const worker of workers) {
+    if (await hasAcked(broadcast.id, worker.phone)) continue;
+    try {
+      await placeCall(worker.phone, broadcast.message);
+      called += 1;
+    } catch (error) {
+      console.error(`[broadcast-safety] escalation call to ${worker.phone} failed:`, error);
+    }
+  }
+  return called;
+}
+
+/**
  * @param {import('@slack/bolt').SlackCommandMiddlewareArgs & import('@slack/bolt').AllMiddlewareArgs} args
  * @returns {Promise<void>}
  */
@@ -117,6 +142,19 @@ export async function handleBroadcastSafetyCommand({ command, ack, respond, clie
   });
   if (posted.ts) {
     await setBroadcastMessage(broadcast.id, command.channel_id, posted.ts);
+  }
+
+  // After a window, voice-call anyone who still hasn't acknowledged. The delay is
+  // read at call time so it can be tuned per run (e.g. ESCALATION_DELAY_MS=30000
+  // to see it quickly in a demo); a negative value disables escalation. .unref()
+  // keeps this pending timer from holding the process open on its own.
+  const delayMs = Number(process.env.ESCALATION_DELAY_MS ?? 15 * 60 * 1000);
+  if (Number.isFinite(delayMs) && delayMs >= 0) {
+    setTimeout(() => {
+      escalateUnacknowledged(broadcast, workers).catch((error) =>
+        console.error('[broadcast-safety] escalation sweep failed:', error),
+      );
+    }, delayMs).unref();
   }
 
   await respond(`Safety broadcast sent to ${sent}/${workers.length} worker(s) at ${site}. Live count posted above.`);

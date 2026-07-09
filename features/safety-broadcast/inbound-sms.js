@@ -8,10 +8,11 @@
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
 // match would miss most of them.
 
-import { recordBroadcastAck } from '../../lib/db.js';
+import { getAckStatus, getLatestBroadcastForPhone, recordBroadcastAck } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { postIssueCard } from '../procore-issue-intake/issue-card.js';
 import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
+import { formatBroadcastStatus } from './broadcast-safety.js';
 
 // Issue-intake conversations over SMS are keyed by phone number; this stands in
 // for the Slack thread key that the same flow uses in the DM path.
@@ -63,6 +64,43 @@ async function classifyReply(text) {
 
   await runLlmTurn({ systemPrompt: CLASSIFY_SYSTEM_PROMPT, history: [], text, tools: [tool] });
   return intent;
+}
+
+/**
+ * Turn a worker's acknowledgment reply into a recorded ack and a live scoreboard
+ * update. Finds the most recent broadcast for the worker's site, records the ack
+ * against it, and rewrites the "X/Y acknowledged" Slack message with the new
+ * count. Returns the matched broadcast, or null if the phone maps to no known
+ * worker or open broadcast.
+ * @param {string | undefined} from - The replying worker's phone (E.164).
+ * @param {import('@slack/web-api').WebClient} client
+ * @returns {Promise<import('../../lib/db.js').Broadcast | null>}
+ */
+export async function recordAckAndUpdateScoreboard(from, client) {
+  if (!from) return null;
+
+  const broadcast = await getLatestBroadcastForPhone(from);
+  if (!broadcast) return null;
+
+  await recordBroadcastAck(broadcast.id, from);
+
+  // Only touch Slack if this broadcast actually has a posted scoreboard message
+  // (it won't in HTTP-only edge cases where the original postMessage failed).
+  if (broadcast.channel && broadcast.messageTs) {
+    const { acknowledged, total } = await getAckStatus(broadcast.id);
+    await client.chat.update({
+      channel: broadcast.channel,
+      ts: broadcast.messageTs,
+      text: formatBroadcastStatus({
+        site: broadcast.siteId,
+        message: broadcast.message,
+        acknowledged,
+        total,
+      }),
+    });
+  }
+
+  return broadcast;
 }
 
 /**
@@ -118,10 +156,7 @@ export async function handleTwilioInboundSms(req, res, client) {
     const intent = await classifyReply(body);
 
     if (intent === 'acknowledgment') {
-      // TODO: look up the actually-open broadcast for this worker/site instead
-      // of a hardcoded placeholder ID, once lib/db.js's broadcast table exists.
-      await recordBroadcastAck('TODO-broadcast-id', from);
-      // TODO: update the live Slack message ("38/45 acknowledged") via client.chat.update.
+      await recordAckAndUpdateScoreboard(from, client);
     } else if (intent === 'issue_report' && from) {
       await runIssueIntake(from, body, photoUrl, client, res);
       return;
