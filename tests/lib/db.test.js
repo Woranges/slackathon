@@ -1,7 +1,14 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { getWorkerByPhone, getWorkerBySlackUserId, getWorkersBySite } from '../../lib/db.js';
+import {
+  createBroadcast,
+  getAckStatus,
+  getWorkerByPhone,
+  getWorkerBySlackUserId,
+  getWorkersBySite,
+  recordBroadcastAck,
+} from '../../lib/db.js';
 
 describe('getWorkerByPhone', () => {
   it('finds a seeded worker by exact E.164 phone', async () => {
@@ -40,5 +47,43 @@ describe('getWorkersBySite', () => {
 
   it('returns an empty array for an unknown site', async () => {
     assert.deepStrictEqual(await getWorkersBySite('site-999'), []);
+  });
+});
+
+describe('createBroadcast', () => {
+  it('returns a broadcast with an id, timestamp, and the given fields', async () => {
+    const broadcast = await createBroadcast('site-1', 'Crane lift at zone 3');
+    assert.strictEqual(typeof broadcast.id, 'string');
+    assert.ok(broadcast.id.length > 0);
+    assert.strictEqual(broadcast.siteId, 'site-1');
+    assert.strictEqual(broadcast.message, 'Crane lift at zone 3');
+    assert.ok(broadcast.createdAt);
+  });
+});
+
+describe('recordBroadcastAck / getAckStatus', () => {
+  it('counts acknowledgments against the number of workers on the site', async () => {
+    // site-1 has two seeded workers (Mike + Sofia).
+    const broadcast = await createBroadcast('site-1', 'Evacuate zone 3');
+
+    let status = await getAckStatus(broadcast.id);
+    assert.deepStrictEqual(status, { acknowledged: 0, total: 2 });
+
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    await recordBroadcastAck(broadcast.id, '+15555550102');
+    status = await getAckStatus(broadcast.id);
+    assert.deepStrictEqual(status, { acknowledged: 2, total: 2 });
+  });
+
+  it('counts a repeated acknowledgment from the same worker only once', async () => {
+    const broadcast = await createBroadcast('site-1', 'Test');
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    const status = await getAckStatus(broadcast.id);
+    assert.strictEqual(status.acknowledged, 1);
+  });
+
+  it('reports zeros for an unknown broadcast', async () => {
+    assert.deepStrictEqual(await getAckStatus('does-not-exist'), { acknowledged: 0, total: 0 });
   });
 });
