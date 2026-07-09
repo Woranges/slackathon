@@ -32,7 +32,7 @@ decline, or ignore it — call the file_issue tool immediately with what you hav
 require a photo, never ask for it more than once, and don't ask for confirmation.`;
 
 /**
- * @param {(args: { area: string, description: string, photo_url?: string }) => Promise<Record<string, unknown>>} onFileIssue
+ * @param {(args: { area: string, description: string }) => Promise<Record<string, unknown>>} onFileIssue
  * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 function createFileIssueTool(onFileIssue) {
@@ -40,22 +40,34 @@ function createFileIssueTool(onFileIssue) {
     functionDeclaration: {
       name: 'file_issue',
       description: 'File the collected issue report once area and description are both known.',
+      // No photo field: the photo is captured deterministically by the listener
+      // (an SMS media URL or a Slack DM file id, latched onto the flow), never
+      // supplied by the model — exposing a photo_url here just invited the model
+      // to hallucinate a URL, which then failed to render as an image block.
       parametersJsonSchema: {
         type: 'object',
         properties: {
           area: { type: 'string', description: 'Location/area of the issue.' },
           description: { type: 'string', description: 'One-line description of the issue.' },
-          photo_url: { type: 'string', description: 'URL of a photo documenting the issue, if provided.' },
         },
         required: ['area', 'description'],
       },
     },
-    handler: (args) => onFileIssue(/** @type {{ area: string, description: string, photo_url?: string }} */ (args)),
+    handler: (args) => onFileIssue(/** @type {{ area: string, description: string }} */ (args)),
   };
 }
 
 /** @type {Map<string, import('@google/genai').Content[]>} */
 const activeFlows = new Map();
+
+// A worker often sends the photo on a different turn than the one where the model
+// finally calls file_issue (e.g. they send the photo, the model says "thanks",
+// then files on the next reply). The per-call `context` only carries the photo
+// from the current message, so without this the photo would be lost. Latch the
+// most recent photo seen anywhere in the flow, keyed like activeFlows, and clear
+// it when the flow completes.
+/** @type {Map<string, { photoSlackFileId: string | null, photoUrl: string | null }>} */
+const flowPhotos = new Map();
 
 /**
  * @param {string} channelId
@@ -117,12 +129,21 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
   const k = key(channelId, threadTs);
   const history = activeFlows.get(k) ?? [];
 
+  // Latch any photo from this turn onto the flow so it survives to file_issue,
+  // even if the model files on a later turn that carries no photo.
+  const priorPhoto = flowPhotos.get(k);
+  const photo = {
+    photoSlackFileId: context.photoSlackFileId ?? priorPhoto?.photoSlackFileId ?? null,
+    photoUrl: context.photoUrl ?? priorPhoto?.photoUrl ?? null,
+  };
+  flowPhotos.set(k, photo);
+
   /** @type {import('./issue-record.js').IssueRecord | undefined} */
   let filedRecord;
   /** @type {import('@slack/types').KnownBlock[] | undefined} */
   let filedCardBlocks;
 
-  const fileIssueTool = createFileIssueTool(async ({ area, description, photo_url }) => {
+  const fileIssueTool = createFileIssueTool(async ({ area, description }) => {
     // Resolve the reporter: by phone (SMS path) or Slack user id (DM path).
     const worker =
       (context.phone ? await getWorkerByPhone(context.phone) : null) ??
@@ -138,8 +159,8 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
       slackUserId: context.slackUserId,
       area,
       description: englishDescription,
-      photoUrl: photo_url ?? context.photoUrl ?? null,
-      photoSlackFileId: context.photoSlackFileId ?? null,
+      photoUrl: photo.photoUrl,
+      photoSlackFileId: photo.photoSlackFileId,
     });
     filedRecord = record;
     filedCardBlocks = buildIssueCardBlocks(record);
@@ -168,6 +189,7 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
   const done = wasFileIssueCalled(newHistory);
   if (done) {
     activeFlows.delete(k);
+    flowPhotos.delete(k);
   } else {
     activeFlows.set(k, newHistory);
   }

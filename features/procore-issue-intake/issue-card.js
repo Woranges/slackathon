@@ -1,21 +1,21 @@
 // Owner: procore-issue-intake feature.
 //
 // Builds the Block Kit card posted to the management channel when a worker files
-// an issue (structured fields + optional inline photo + Assign/Escalate/Resolved
-// buttons). Pure function returning blocks — the actual client.chat.postMessage
-// call is wired separately, so this stays unit-testable with no Slack client.
+// an issue (structured fields + Assign/Escalate/Resolved buttons). Pure function
+// returning blocks — the actual client.chat.postMessage call is wired separately,
+// so this stays unit-testable with no Slack client.
 //
 // The three buttons carry the reporter's phone as their `value` so the action
 // handlers can text the worker back without a lookup. Once issues are persisted
 // (and get a Procore/DB id), switch `value` to that id and look the record up.
 //
-// Photos: a texted photo's Twilio media URL is auth-protected, so it can't be
-// rendered via a plain image_url. postIssueCard() re-uploads it to Slack (see
-// issue-photo.js) and passes the resulting file id here, which renders inline
-// via `slack_file`. When only a public image_url is available (or the re-upload
-// fails), the builder falls back to image_url.
+// Photos are NOT rendered inline in the card: Slack won't render a `slack_file`
+// reference to a freshly bot-uploaded file, and `image_url` can't fetch the
+// auth-protected DM/Twilio source URLs. Instead postIssueCard() posts the photo
+// as a reply in the card's thread (see issue-photo.js#postPhotoReply), and the
+// card shows a "photo attached in thread" hint when a photo is present.
 
-import { uploadPhotoToSlack } from './issue-photo.js';
+import { postPhotoReply } from './issue-photo.js';
 
 /**
  * @typedef {import('./issue-record.js').IssueRecord} IssueRecord
@@ -27,16 +27,16 @@ export const ISSUE_RESOLVED_ACTION = 'issue_resolved';
 
 /**
  * @param {IssueRecord} record
- * @param {{ slackFileId?: string | null }} [opts] - A Slack file id to render the
- *   photo inline via `slack_file`; falls back to record.photoUrl when absent.
  * @returns {import('@slack/types').KnownBlock[]}
  */
-export function buildIssueCardBlocks(record, opts = {}) {
+export function buildIssueCardBlocks(record) {
   const value = record.reporter.phone;
   // Render the timestamp in each viewer's own locale/timezone via Slack's date
   // token, falling back to the raw ISO string in clients that can't format it.
+  // `{date_long}` gives weekday + full date (e.g. "Wednesday, July 8th, 2026")
+  // and never collapses to "today"/"tomorrow" the way `{date_*_pretty}` does.
   const reportedAtUnix = Math.floor(new Date(record.timestamp).getTime() / 1000);
-  const reportedAt = `<!date^${reportedAtUnix}^{date_short_pretty} at {time}|${record.timestamp}>`;
+  const reportedAt = `<!date^${reportedAtUnix}^{date_long} at {time}|${record.timestamp}>`;
 
   /** @type {import('@slack/types').KnownBlock[]} */
   const blocks = [
@@ -59,19 +59,12 @@ export function buildIssueCardBlocks(record, opts = {}) {
     },
   ];
 
-  if (opts.slackFileId) {
-    blocks.push(
-      /** @type {import('@slack/types').ImageBlock} */ ({
-        type: 'image',
-        slack_file: { id: opts.slackFileId },
-        alt_text: 'Photo of the reported issue',
-      }),
-    );
-  } else if (record.photoUrl) {
+  // Photo lives in the card's thread (see file header); surface a hint so it's
+  // easy to find.
+  if (record.photoSlackFileId || record.photoUrl) {
     blocks.push({
-      type: 'image',
-      image_url: record.photoUrl,
-      alt_text: 'Photo of the reported issue',
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: ':camera_with_flash: Photo attached in thread' }],
     });
   }
 
@@ -116,26 +109,16 @@ export async function postIssueCard(client, record) {
   const channel = process.env.MANAGEMENT_CHANNEL_ID;
   if (!channel) return { posted: false, reason: 'MANAGEMENT_CHANNEL_ID not set' };
 
-  // Prefer a photo already hosted in Slack (uploaded in a DM); otherwise
-  // re-upload an external URL (e.g. a Twilio media URL, which is auth-protected).
-  // Best-effort — a null id just omits the inline image.
-  const slackFileId =
-    record.photoSlackFileId ?? (record.photoUrl ? await uploadPhotoToSlack(client, record.photoUrl) : null);
   // Fallback text shown in notifications / clients that can't render blocks.
   const text = `New site issue reported: ${record.area}`;
+  const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record) });
+  const ts = /** @type {string} */ (res.ts);
 
-  try {
-    const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record, { slackFileId }) });
-    return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
-  } catch (e) {
-    // If the inline photo was rejected (e.g. an unrenderable file reference),
-    // post the card without it rather than dropping it entirely.
-    if (!slackFileId) throw e;
-    const res = await client.chat.postMessage({
-      channel,
-      text,
-      blocks: buildIssueCardBlocks({ ...record, photoUrl: null }),
-    });
-    return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
+  // Attach the photo as a reply in the card's thread (best-effort; see
+  // issue-photo.js for why it isn't an inline block).
+  if (record.photoSlackFileId || record.photoUrl) {
+    await postPhotoReply(client, record, channel, ts);
   }
+
+  return { posted: true, channel, ts };
 }
