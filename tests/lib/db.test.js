@@ -4,10 +4,12 @@ import { describe, it } from 'node:test';
 import {
   createBroadcast,
   getAckStatus,
+  getBroadcast,
   getWorkerByPhone,
   getWorkerBySlackUserId,
   getWorkersBySite,
   recordBroadcastAck,
+  setBroadcastMessage,
 } from '../../lib/db.js';
 
 describe('getWorkerByPhone', () => {
@@ -85,5 +87,19 @@ describe('recordBroadcastAck / getAckStatus', () => {
 
   it('reports zeros for an unknown broadcast', async () => {
     assert.deepStrictEqual(await getAckStatus('does-not-exist'), { acknowledged: 0, total: 0 });
+  });
+});
+
+describe('setBroadcastMessage / getBroadcast', () => {
+  it('stores and returns the Slack message reference on a broadcast', async () => {
+    const broadcast = await createBroadcast('site-1', 'Test');
+    await setBroadcastMessage(broadcast.id, 'C123', '1700000000.000100');
+    const fetched = await getBroadcast(broadcast.id);
+    assert.strictEqual(fetched?.channel, 'C123');
+    assert.strictEqual(fetched?.messageTs, '1700000000.000100');
+  });
+
+  it('returns null for an unknown broadcast', async () => {
+    assert.strictEqual(await getBroadcast('nope'), null);
   });
 });
