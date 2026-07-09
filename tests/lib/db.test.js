@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { getWorkerByPhone, getWorkersBySite } from '../../lib/db.js';
+import { getWorkerByPhone, getWorkerBySlackUserId, getWorkersBySite } from '../../lib/db.js';
 
 describe('getWorkerByPhone', () => {
   it('finds a seeded worker by exact E.164 phone', async () => {
@@ -17,6 +17,18 @@ describe('getWorkerByPhone', () => {
 
   it('returns null for an unknown phone', async () => {
     assert.strictEqual(await getWorkerByPhone('+19998887777'), null);
+  });
+});
+
+describe('getWorkerBySlackUserId', () => {
+  it('finds a seeded worker by Slack user id', async () => {
+    const worker = await getWorkerBySlackUserId('U0BDLQZNN2Z');
+    assert.strictEqual(worker?.name, 'Mike Alvarez');
+    assert.strictEqual(worker?.siteId, 'site-1');
+  });
+
+  it('returns null for an unknown Slack user id', async () => {
+    assert.strictEqual(await getWorkerBySlackUserId('UNOPE'), null);
   });
 });
 

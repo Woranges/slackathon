@@ -18,11 +18,14 @@
 
 /**
  * @typedef {Object} IssueRecord
- * @property {{ name: string, phone: string }} reporter
+ * @property {{ name: string, phone: string }} reporter - `name` may be a Slack
+ *   mention (`<@U…>`) on the DM path, which renders as the user's name.
  * @property {string | null} siteId
  * @property {string} area
  * @property {string} description - Expected already translated to English by the caller.
- * @property {string | null} photoUrl
+ * @property {string | null} photoUrl - External photo URL (e.g. a Twilio media URL).
+ * @property {string | null} photoSlackFileId - Slack file id for a photo already
+ *   hosted in Slack (e.g. uploaded in a DM); preferred over photoUrl for rendering.
  * @property {Geotag | null} geotag
  * @property {string} timestamp - ISO 8601 string.
  */
@@ -31,10 +34,13 @@
  * Assemble the structured issue record.
  * @param {Object} params
  * @param {string} params.phone - Reporter's phone (E.164), from the inbound SMS `From`.
- * @param {Worker | null} [params.worker] - Resolved via getWorkerByPhone; null if unknown.
+ * @param {Worker | null} [params.worker] - Resolved via getWorkerByPhone/SlackUserId; null if unknown.
+ * @param {string} [params.slackUserId] - Reporter's Slack user id (DM path); used as a
+ *   `<@…>` mention for the name when no worker record is found.
  * @param {string} params.area
  * @param {string} params.description
  * @param {string | null} [params.photoUrl]
+ * @param {string | null} [params.photoSlackFileId]
  * @param {Geotag | null} [params.geotag]
  * @param {Date | string | number} [params.timestamp] - Defaults to now.
  * @returns {IssueRecord}
@@ -42,20 +48,24 @@
 export function buildIssueRecord({
   phone,
   worker = null,
+  slackUserId,
   area,
   description,
   photoUrl = null,
+  photoSlackFileId = null,
   geotag = null,
   timestamp = new Date(),
 }) {
   const at = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  const name = worker?.name ?? (slackUserId ? `<@${slackUserId}>` : 'Unknown worker');
 
   return {
-    reporter: { name: worker?.name ?? 'Unknown worker', phone },
+    reporter: { name, phone },
     siteId: worker?.siteId ?? null,
     area,
     description,
     photoUrl,
+    photoSlackFileId,
     geotag,
     timestamp: at.toISOString(),
   };

@@ -34,16 +34,17 @@ function actor(body) {
  * Update the card message in place: new status line, no buttons.
  * @param {any} client
  * @param {any} body
- * @param {string} statusText - mrkdwn.
+ * @param {string} statusText - mrkdwn shown on the card.
+ * @param {string} fallbackText - plain text for notifications (no mrkdwn/emoji markup).
  */
-async function updateCard(client, body, statusText) {
+async function updateCard(client, body, statusText, fallbackText) {
   const channel = body?.channel?.id;
   const ts = body?.message?.ts;
   if (!channel || !ts) return;
   await client.chat.update({
     channel,
     ts,
-    text: statusText.replace(/[*_<>@]/g, ''),
+    text: fallbackText,
     blocks: applyIssueStatus(body?.message?.blocks, statusText),
   });
 }
@@ -79,7 +80,7 @@ function makeHandler(label, emoji, smsMessage) {
     await ack();
     try {
       const phone = body.actions[0]?.value;
-      await updateCard(client, body, `${emoji} *${label}* by ${actor(body)}`);
+      await updateCard(client, body, `${emoji} *${label}* by ${actor(body)}`, `Issue ${label.toLowerCase()}`);
       await textReporter(phone, smsMessage, logger);
     } catch (e) {
       logger.error(`Failed to handle issue ${label.toLowerCase()}: ${e}`);
