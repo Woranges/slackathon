@@ -121,12 +121,21 @@ export async function postIssueCard(client, record) {
   // Best-effort — a null id just omits the inline image.
   const slackFileId =
     record.photoSlackFileId ?? (record.photoUrl ? await uploadPhotoToSlack(client, record.photoUrl) : null);
+  // Fallback text shown in notifications / clients that can't render blocks.
+  const text = `New site issue reported: ${record.area}`;
 
-  const res = await client.chat.postMessage({
-    channel,
-    // Fallback text shown in notifications / clients that can't render blocks.
-    text: `New site issue reported: ${record.area}`,
-    blocks: buildIssueCardBlocks(record, { slackFileId }),
-  });
-  return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
+  try {
+    const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record, { slackFileId }) });
+    return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
+  } catch (e) {
+    // If the inline photo was rejected (e.g. an unrenderable file reference),
+    // post the card without it rather than dropping it entirely.
+    if (!slackFileId) throw e;
+    const res = await client.chat.postMessage({
+      channel,
+      text,
+      blocks: buildIssueCardBlocks({ ...record, photoUrl: null }),
+    });
+    return { posted: true, channel, ts: /** @type {string} */ (res.ts) };
+  }
 }

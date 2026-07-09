@@ -9,11 +9,15 @@ import { conversationStore } from '../../thread-context/index.js';
 import { buildFeedbackBlocks } from '../views/feedback-builder.js';
 
 /**
+ * Handleable message events: plain messages and file uploads (photos). We skip
+ * other subtypes (edits, deletes, channel joins, …). `file_share` must be
+ * allowed so a photo sent mid-intake isn't dropped.
  * @param {import('@slack/types').MessageEvent} event
  * @returns {event is import('@slack/types').GenericMessageEvent}
  */
 function isGenericMessageEvent(event) {
-  return !('subtype' in event && event.subtype !== undefined);
+  const subtype = 'subtype' in event ? event.subtype : undefined;
+  return subtype === undefined || subtype === 'file_share';
 }
 
 /**

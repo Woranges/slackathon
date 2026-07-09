@@ -100,4 +100,26 @@ describe('postIssueCard', () => {
     assert.ok(Array.isArray(calls[0].blocks));
     assert.match(calls[0].text, /New site issue reported/);
   });
+
+  it('retries without the image when a photo reference is rejected', async () => {
+    process.env.MANAGEMENT_CHANNEL_ID = 'C123MGMT';
+    const calls = [];
+    // Client that rejects any post containing an image block, then succeeds.
+    const client = {
+      chat: {
+        postMessage: async (args) => {
+          calls.push(args);
+          if (args.blocks.some((b) => b.type === 'image')) throw new Error('invalid_blocks');
+          return { ts: '1700000000.000200' };
+        },
+      },
+    };
+    const result = await postIssueCard(client, { ...record, photoSlackFileId: 'F_DM_1' });
+    assert.strictEqual(result.posted, true);
+    assert.strictEqual(calls.length, 2); // first with image (throws), retry without
+    assert.strictEqual(
+      calls[1].blocks.some((b) => b.type === 'image'),
+      false,
+    );
+  });
 });
