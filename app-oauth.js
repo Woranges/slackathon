@@ -2,7 +2,7 @@ import 'dotenv/config';
 
 import { readFileSync } from 'node:fs';
 
-import { App, LogLevel } from '@slack/bolt';
+import { App, ExpressReceiver, LogLevel } from '@slack/bolt';
 import pkg from '@slack/oauth';
 
 const { FileInstallationStore } = pkg;
@@ -41,10 +41,11 @@ const installationStore = {
   deleteInstallation: async (query) => fileStore.deleteInstallation(query),
 };
 
-const app = new App({
-  logLevel: LogLevel.DEBUG,
+// Use an explicit ExpressReceiver (not the default HTTPReceiver) so we can mount
+// the Twilio webhook route on its Express `router` in registerWebhooks(). The
+// OAuth/installer config lives on the receiver when a custom receiver is used.
+const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  ignoreSelf: false,
   clientId: process.env.SLACK_CLIENT_ID,
   clientSecret: process.env.SLACK_CLIENT_SECRET,
   stateSecret: 'bolt-js-starter-agent',
@@ -54,6 +55,12 @@ const app = new App({
     stateVerification: true,
     userScopes,
   },
+});
+
+const app = new App({
+  logLevel: LogLevel.DEBUG,
+  ignoreSelf: false,
+  receiver,
 });
 
 registerListeners(app);
