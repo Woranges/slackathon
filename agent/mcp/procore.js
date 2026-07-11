@@ -83,7 +83,7 @@ export function buildRfiPayload(record, assigneeIds = []) {
     record.description,
     '',
     `Reported by: ${record.reporter.name} (${record.reporter.phone})`,
-    record.siteId ? `Site: ${record.siteId}` : null,
+    record.siteName || record.siteId ? `Site: ${record.siteName ?? record.siteId}` : null,
     isSafety && record.severity ? `Severity: ${record.severity}` : null,
     !isSafety && record.specReference ? `Reference: ${record.specReference}` : null,
     record.geotag ? `Location: ${record.geotag.lat}, ${record.geotag.lng}` : null,

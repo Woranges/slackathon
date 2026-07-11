@@ -46,7 +46,7 @@ export function buildIssueCardBlocks(record, rfi = null) {
   const fields = [
     { type: 'mrkdwn', text: `*Area:*\n${record.area}` },
     { type: 'mrkdwn', text: `*Reported by:*\n${record.reporter.name}` },
-    { type: 'mrkdwn', text: `*Site:*\n${record.siteId ?? '—'}` },
+    { type: 'mrkdwn', text: `*Site:*\n${record.siteName ?? record.siteId ?? '—'}` },
     { type: 'mrkdwn', text: `*Reported at:*\n${reportedAt}` },
   ];
   if (isSafety) fields.push({ type: 'mrkdwn', text: `*Severity:*\n${record.severity ?? '—'}` });
@@ -126,9 +126,13 @@ export async function postIssueCard(client, record, rfi = null) {
   const channel = process.env.MANAGEMENT_CHANNEL_ID;
   if (!channel) return { posted: false, reason: 'MANAGEMENT_CHANNEL_ID not set' };
 
-  // Fallback text shown in notifications / clients that can't render blocks.
+  // Fallback text shown in notifications / clients that can't render blocks — and,
+  // just as importantly, the ONLY text the Real-Time Search API can index for this
+  // card (the structured fields live in blocks, which RTS doesn't read). So make it
+  // a self-contained summary: type, site, area, and description all searchable.
   const label = record.reportType === 'safety' ? 'Safety report' : 'RFI';
-  const text = `New ${label} reported: ${record.area}`;
+  const site = record.siteName ?? record.siteId;
+  const text = `New ${label}${site ? ` at ${site}` : ''}: ${record.area}. ${record.description}`;
   const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record, rfi) });
   const ts = /** @type {string} */ (res.ts);
 

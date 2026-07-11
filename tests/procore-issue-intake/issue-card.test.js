@@ -110,7 +110,11 @@ describe('postIssueCard', () => {
     assert.strictEqual(calls.posts.length, 1);
     assert.strictEqual(calls.posts[0].channel, 'C123MGMT');
     assert.ok(Array.isArray(calls.posts[0].blocks));
-    assert.match(calls.posts[0].text, /New RFI reported/);
+    // Fallback text is a self-contained summary (also the only thing RTS indexes):
+    // type + area + description all present.
+    assert.match(calls.posts[0].text, /New RFI/);
+    assert.match(calls.posts[0].text, new RegExp(record.area.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(calls.posts[0].text, new RegExp(record.description));
     // No photo on this record → no thread upload.
     assert.strictEqual(calls.uploads.length, 0);
   });
