@@ -45,8 +45,11 @@ never respond in plain text.
 
 - "acknowledgment": the worker is confirming they received/understood a safety alert \
   (e.g. "ok", "got it", "yes", "roger", "👍", "on it").
-- "issue_report": the worker is reporting a new problem, not acknowledging anything.
-- "other": anything else.`;
+- "issue_report": the worker is starting a new report of ANY kind that should be logged — \
+  a site problem, a safety hazard, OR a field question / RFI needing an answer from the \
+  office (e.g. "there's a leak on 4", "I need clarification on the door schedule", \
+  "who approved this detail?"). Anything that isn't just an acknowledgment or small talk.
+- "other": greetings, small talk, or noise that doesn't start a report and isn't an ack.`;
 
 /**
  * @param {(intent: 'acknowledgment' | 'issue_report' | 'other') => void} onClassified

@@ -32,13 +32,18 @@ describe('buildRfiPayload', () => {
     assert.deepStrictEqual(buildRfiPayload(record, [99519]).rfi.assignee_ids, [99519]);
   });
 
-  it('includes description, reporter, site, location and photo in the body', () => {
+  it('includes description, reporter, site and location in the body', () => {
     const body = buildRfiPayload(record).rfi.question.body;
     assert.match(body, /Loose handrail/);
     assert.match(body, /Mike Alvarez \(\+15555550101\)/);
     assert.match(body, /Site: site-1/);
     assert.match(body, /40\.1, -74\.2/);
-    assert.match(body, /example\.com\/p\.jpg/);
+  });
+
+  it('does not put the (auth-protected) photo URL in the body — it is a real attachment', () => {
+    const body = buildRfiPayload(record).rfi.question.body;
+    assert.doesNotMatch(body, /example\.com\/p\.jpg/);
+    assert.doesNotMatch(body, /Photo:/);
   });
 
   it('omits optional lines that are absent', () => {

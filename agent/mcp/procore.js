@@ -87,7 +87,8 @@ export function buildRfiPayload(record, assigneeIds = []) {
     isSafety && record.severity ? `Severity: ${record.severity}` : null,
     !isSafety && record.specReference ? `Reference: ${record.specReference}` : null,
     record.geotag ? `Location: ${record.geotag.lat}, ${record.geotag.lng}` : null,
-    record.photoUrl ? `Photo: ${record.photoUrl}` : null,
+    // The photo is uploaded as a real RFI attachment (see createProcoreRfi), not
+    // a body link — a raw Twilio media URL is auth-protected and unopenable.
     `Reported at: ${record.timestamp}`,
   ].filter((l) => l !== null);
 
@@ -168,7 +169,55 @@ async function resolveAssigneeIds(token, e) {
 }
 
 /**
- * Create an RFI in Procore from a structured issue record.
+ * Download the reported photo's bytes for attaching to the RFI. Only handles an
+ * external URL (e.g. a Twilio media URL, fetched with Twilio Basic auth) — a
+ * Slack-DM photo (photoSlackFileId, no photoUrl) needs the Slack client and is
+ * left to the Slack card thread. Best-effort: null on absence or any failure.
+ * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
+ * @returns {Promise<{ bytes: ArrayBuffer, contentType: string, filename: string } | null>}
+ */
+async function downloadRfiPhoto(record) {
+  if (!record.photoUrl) return null;
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const headers =
+    sid && token ? { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString('base64')}` } : undefined;
+  try {
+    const res = await fetch(record.photoUrl, headers ? { headers } : undefined);
+    if (!res.ok) {
+      console.error(`[procore] RFI photo download failed: ${res.status}`);
+      return null;
+    }
+    const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+    const ext = (contentType.split('/')[1] ?? 'jpg').split(';')[0] || 'jpg';
+    return { bytes: await res.arrayBuffer(), contentType, filename: `issue-photo.${ext}` };
+  } catch (err) {
+    console.error(`[procore] RFI photo download error: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Flatten the RFI payload + photo into a multipart body using Procore's
+ * bracket-notation field names, so the image uploads as a real RFI attachment.
+ * @param {ReturnType<typeof buildRfiPayload>} payload
+ * @param {{ bytes: ArrayBuffer, contentType: string, filename: string }} photo
+ * @returns {FormData}
+ */
+function toRfiMultipart(payload, photo) {
+  const rfi = /** @type {any} */ (payload.rfi);
+  const fd = new FormData();
+  fd.set('rfi[subject]', String(rfi.subject));
+  for (const id of rfi.assignee_ids ?? []) fd.append('rfi[assignee_ids][]', String(id));
+  fd.set('rfi[question][body]', String(rfi.question?.body ?? ''));
+  fd.append('rfi[question][attachments][][data]', new Blob([photo.bytes], { type: photo.contentType }), photo.filename);
+  return fd;
+}
+
+/**
+ * Create an RFI in Procore from a structured issue record. When the record
+ * carries a downloadable photo, it's uploaded as a real RFI attachment via a
+ * multipart create; otherwise a plain JSON create is used.
  * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
  * @returns {Promise<{ id: number, url: string | null }>}
  */
@@ -181,15 +230,28 @@ export async function createProcoreRfi(record) {
   const e = procoreEnv();
   const token = await getAccessToken();
   const assigneeIds = await resolveAssigneeIds(token, e);
-  const res = await fetch(`${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Procore-Company-Id': String(e.companyId),
-    },
-    body: JSON.stringify(buildRfiPayload(record, assigneeIds)),
-  });
+  const payload = buildRfiPayload(record, assigneeIds);
+  const photo = await downloadRfiPhoto(record);
+
+  const url = `${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis`;
+  /** @type {RequestInit} */
+  const req = photo
+    ? {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Procore-Company-Id': String(e.companyId) },
+        body: toRfiMultipart(payload, photo),
+      }
+    : {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Procore-Company-Id': String(e.companyId),
+        },
+        body: JSON.stringify(payload),
+      };
+
+  const res = await fetch(url, req);
   if (!res.ok) {
     throw new Error(`Procore RFI create failed: ${res.status} ${await res.text()}`);
   }
