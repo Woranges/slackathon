@@ -5,9 +5,14 @@
 // returning blocks — the actual client.chat.postMessage call is wired separately,
 // so this stays unit-testable with no Slack client.
 //
-// The three buttons carry the reporter's phone as their `value` so the action
-// handlers can text the worker back without a lookup. Once issues are persisted
-// (and get a Procore/DB id), switch `value` to that id and look the record up.
+// Buttons are stream-specific: a SAFETY card gets Escalate (urgent attention),
+// a normal RFI card gets Assign (hand it to a specific worker); both get
+// Resolved. Escalate/Resolved buttons carry the reporter's phone + RFI id as
+// their `value` so the handlers can text the reporter / note the RFI without a
+// lookup. Assign is a worker-picker dropdown whose option values carry the
+// chosen worker's phone + name, so the handler texts *that* worker (best-effort,
+// like every outbound leg). When the directory has no textable workers, Assign
+// falls back to a plain button that just marks the card assigned.
 //
 // Photos are NOT rendered inline in the card: Slack won't render a `slack_file`
 // reference to a freshly bot-uploaded file, and `image_url` can't fetch the
@@ -15,6 +20,7 @@
 // as a reply in the card's thread (see issue-photo.js#postPhotoReply), and the
 // card shows a "photo attached in thread" hint when a photo is present.
 
+import { getWorkersBySite } from '../../lib/db.js';
 import { postPhotoReply } from './issue-photo.js';
 
 /**
@@ -22,17 +28,23 @@ import { postPhotoReply } from './issue-photo.js';
  */
 
 export const ISSUE_ASSIGN_ACTION = 'issue_assign';
+export const ISSUE_ASSIGN_SELECT_ACTION = 'issue_assign_select';
 export const ISSUE_ESCALATE_ACTION = 'issue_escalate';
 export const ISSUE_RESOLVED_ACTION = 'issue_resolved';
 
 /**
+ * @typedef {{ name?: string, phone: string }} Assignee - A worker who can be assigned an RFI (must have a phone to text).
+ */
+
+/**
  * @param {IssueRecord} record
  * @param {{ id: number, url: string | null } | null} [rfi] - The created Procore RFI, if any.
+ * @param {Assignee[]} [assignees] - Textable workers offered in the Assign dropdown (RFI cards only).
  * @returns {import('@slack/types').KnownBlock[]}
  */
-export function buildIssueCardBlocks(record, rfi = null) {
-  // Buttons carry the reporter phone + the RFI id so the action handlers can text
-  // the reporter and post a resolution reply to the RFI without a lookup.
+export function buildIssueCardBlocks(record, rfi = null, assignees = []) {
+  // Escalate/Resolved carry the reporter phone + the RFI id so the action handlers
+  // can text the reporter and post a resolution reply to the RFI without a lookup.
   const value = JSON.stringify({ phone: record.reporter.phone, rfiId: rfi?.id ?? null });
   const isSafety = record.reportType === 'safety';
   // Render the timestamp in each viewer's own locale/timezone via Slack's date
@@ -84,31 +96,47 @@ export function buildIssueCardBlocks(record, rfi = null) {
     });
   }
 
-  blocks.push({
-    type: 'actions',
-    elements: [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Assign' },
-        style: 'primary',
-        action_id: ISSUE_ASSIGN_ACTION,
-        value,
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Escalate' },
-        style: 'danger',
-        action_id: ISSUE_ESCALATE_ACTION,
-        value,
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Resolved' },
-        action_id: ISSUE_RESOLVED_ACTION,
-        value,
-      },
-    ],
+  /** @type {any[]} */
+  const elements = [];
+  if (isSafety) {
+    // Safety cards: Escalate (urgent attention) — not Assign.
+    elements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Escalate' },
+      style: 'danger',
+      action_id: ISSUE_ESCALATE_ACTION,
+      value,
+    });
+  } else if (assignees.length > 0) {
+    // Normal RFI cards: a worker-picker so the handler can text the chosen worker.
+    elements.push({
+      type: 'static_select',
+      placeholder: { type: 'plain_text', text: 'Assign to…' },
+      action_id: ISSUE_ASSIGN_SELECT_ACTION,
+      options: assignees.slice(0, 100).map((w) => ({
+        text: { type: 'plain_text', text: (w.name ?? w.phone).slice(0, 75) },
+        // Keep the value compact (Slack caps option values at 75 chars): phone,
+        // name, rfi id — enough to text the worker and update the card.
+        value: JSON.stringify({ p: w.phone, n: (w.name ?? w.phone).slice(0, 40), r: rfi?.id ?? null }),
+      })),
+    });
+  } else {
+    // No textable workers in the directory — plain Assign that just marks the card.
+    elements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Assign' },
+      style: 'primary',
+      action_id: ISSUE_ASSIGN_ACTION,
+      value,
+    });
+  }
+  elements.push({
+    type: 'button',
+    text: { type: 'plain_text', text: 'Resolved' },
+    action_id: ISSUE_RESOLVED_ACTION,
+    value,
   });
+  blocks.push({ type: 'actions', elements });
 
   return blocks;
 }
@@ -133,7 +161,20 @@ export async function postIssueCard(client, record, rfi = null) {
   const label = record.reportType === 'safety' ? 'Safety report' : 'RFI';
   const site = record.siteName ?? record.siteId;
   const text = `New ${label}${site ? ` at ${site}` : ''}: ${record.area}. ${record.description}`;
-  const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record, rfi) });
+
+  // For a normal RFI, offer the site's textable workers in the Assign dropdown.
+  // Best-effort: a directory lookup failure must not block posting the card.
+  /** @type {import('./issue-card.js').Assignee[]} */
+  let assignees = [];
+  if (record.reportType !== 'safety' && record.siteId) {
+    try {
+      assignees = (await getWorkersBySite(record.siteId)).filter((w) => Boolean(w.phone));
+    } catch {
+      assignees = [];
+    }
+  }
+
+  const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record, rfi, assignees) });
   const ts = /** @type {string} */ (res.ts);
 
   // Attach the photo as a reply in the card's thread (best-effort; see

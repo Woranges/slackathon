@@ -1,8 +1,10 @@
 import {
   handleIssueAssign,
+  handleIssueAssignSelect,
   handleIssueEscalate,
   handleIssueResolved,
   ISSUE_ASSIGN_ACTION,
+  ISSUE_ASSIGN_SELECT_ACTION,
   ISSUE_ESCALATE_ACTION,
   ISSUE_RESOLVED_ACTION,
 } from '../../features/procore-issue-intake/issue-actions.js';
@@ -16,6 +18,7 @@ import { handleFeedbackButton } from './feedback-buttons.js';
 export function register(app) {
   app.action('feedback', handleFeedbackButton);
   app.action(ISSUE_ASSIGN_ACTION, handleIssueAssign);
+  app.action(ISSUE_ASSIGN_SELECT_ACTION, handleIssueAssignSelect);
   app.action(ISSUE_ESCALATE_ACTION, handleIssueEscalate);
   app.action(ISSUE_RESOLVED_ACTION, handleIssueResolved);
 }

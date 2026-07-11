@@ -1,7 +1,11 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { applyIssueStatus, handleIssueResolved } from '../../features/procore-issue-intake/issue-actions.js';
+import {
+  applyIssueStatus,
+  handleIssueAssignSelect,
+  handleIssueResolved,
+} from '../../features/procore-issue-intake/issue-actions.js';
 
 const cardBlocks = [
   { type: 'header', text: { type: 'plain_text', text: ':construction: New site issue' } },
@@ -75,6 +79,33 @@ describe('handleIssueResolved', () => {
       false,
     );
     assert.match(JSON.stringify(updates[0].blocks), /Resolved/);
+    assert.match(JSON.stringify(updates[0].blocks), /U999/);
+  });
+});
+
+describe('handleIssueAssignSelect', () => {
+  it('marks the card assigned to the chosen worker (name in status), buttons gone, SMS failure swallowed', async () => {
+    const updates = [];
+    const args = {
+      ack: async () => {},
+      client: { chat: { update: async (a) => updates.push(a) } },
+      logger: { info: () => {}, error: () => {} },
+      body: {
+        user: { id: 'U999' },
+        channel: { id: 'C123MGMT' },
+        message: { ts: '1700000000.000100', blocks: cardBlocks },
+        // static_select fires with selected_option, not value.
+        actions: [{ selected_option: { value: JSON.stringify({ p: '+15555550102', n: 'Sofia Reyes', r: 42 }) } }],
+      },
+    };
+    await handleIssueAssignSelect(args); // sendSms throws internally; must be swallowed
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(
+      updates[0].blocks.some((b) => b.type === 'actions'),
+      false,
+      'buttons should be gone',
+    );
+    assert.match(JSON.stringify(updates[0].blocks), /Assigned to Sofia Reyes/);
     assert.match(JSON.stringify(updates[0].blocks), /U999/);
   });
 });
