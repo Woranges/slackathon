@@ -5,9 +5,11 @@ import {
   createBroadcast,
   getAckStatus,
   getBroadcast,
+  getLatestBroadcastForPhone,
   getWorkerByPhone,
   getWorkerBySlackUserId,
   getWorkersBySite,
+  hasAcked,
   recordBroadcastAck,
   setBroadcastMessage,
 } from '../../lib/db.js';
@@ -101,5 +103,48 @@ describe('setBroadcastMessage / getBroadcast', () => {
 
   it('returns null for an unknown broadcast', async () => {
     assert.strictEqual(await getBroadcast('nope'), null);
+  });
+});
+
+describe('getLatestBroadcastForPhone', () => {
+  it("returns the most recent broadcast for the worker's site", async () => {
+    const older = await createBroadcast('site-1', 'Older alert');
+    const newer = await createBroadcast('site-1', 'Newer alert');
+    // Sofia (+15555550102) is on site-1, so she should map to the newest site-1 broadcast.
+    const found = await getLatestBroadcastForPhone('+15555550102');
+    assert.strictEqual(found?.id, newer.id);
+    assert.notStrictEqual(found?.id, older.id);
+  });
+
+  it('matches the worker regardless of phone formatting', async () => {
+    const broadcast = await createBroadcast('site-1', 'Formatted-phone alert');
+    // Mike is +15555550101; look him up with human formatting.
+    const found = await getLatestBroadcastForPhone('+1 (555) 555-0101');
+    assert.strictEqual(found?.id, broadcast.id);
+  });
+
+  it('returns null for an unknown phone', async () => {
+    await createBroadcast('site-1', 'Alert');
+    assert.strictEqual(await getLatestBroadcastForPhone('+19998887777'), null);
+  });
+
+  it("returns null when the worker's site has no broadcast", async () => {
+    // Chen Wei is on site-2; no site-2 broadcast has been created in this file.
+    assert.strictEqual(await getLatestBroadcastForPhone('+15555550103'), null);
+  });
+});
+
+describe('hasAcked', () => {
+  it('is true after a worker acknowledges, false before', async () => {
+    const broadcast = await createBroadcast('site-1', 'Alert');
+    assert.strictEqual(await hasAcked(broadcast.id, '+15555550101'), false);
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    assert.strictEqual(await hasAcked(broadcast.id, '+15555550101'), true);
+  });
+
+  it('is false for a worker who has not acknowledged this broadcast', async () => {
+    const broadcast = await createBroadcast('site-1', 'Alert');
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    assert.strictEqual(await hasAcked(broadcast.id, '+15555550102'), false);
   });
 });
