@@ -1,3 +1,4 @@
+import { WebClient } from '@slack/web-api';
 import express from 'express';
 
 import { handleTwilioInboundSms } from '../../features/safety-broadcast/inbound-sms.js';
@@ -12,8 +13,11 @@ import { handleTwilioInboundSms } from '../../features/safety-broadcast/inbound-
  */
 export function registerWebhooks(app) {
   const receiver = /** @type {import('@slack/bolt').ExpressReceiver} */ (app.receiver);
-  // Pass the bot's Slack client so the inbound handler can post the issue card.
+  // A webhook isn't a Slack event, so Bolt never hands us a per-event authorized
+  // client and `app.client` has no token in OAuth mode — use an explicit
+  // bot-token client so the inbound handler can post the card + upload the photo.
+  const botClient = new WebClient(process.env.SLACK_BOT_TOKEN);
   receiver.router.post('/twilio/sms', express.urlencoded({ extended: false }), (req, res) =>
-    handleTwilioInboundSms(req, res, app.client),
+    handleTwilioInboundSms(req, res, botClient),
   );
 }

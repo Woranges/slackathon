@@ -35,7 +35,7 @@ describe('getWorkerBySlackUserId', () => {
 describe('getWorkersBySite', () => {
   it('returns every worker on a site', async () => {
     const workers = await getWorkersBySite('site-1');
-    assert.deepStrictEqual(workers.map((w) => w.name).sort(), ['Mike Alvarez', 'Sofia Reyes']);
+    assert.deepStrictEqual(workers.map((w) => w.name).sort(), ['Mike Alvarez', 'Sofia Reyes', 'Warren Zhang']);
   });
 
   it('returns an empty array for an unknown site', async () => {

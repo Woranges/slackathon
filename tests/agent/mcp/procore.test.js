@@ -28,8 +28,12 @@ describe('buildRfiPayload', () => {
     assert.strictEqual(payload.rfi.subject, 'Field issue: 3rd floor, east stairwell');
   });
 
+  it('includes the passed assignee ids (Procore requires a non-empty list)', () => {
+    assert.deepStrictEqual(buildRfiPayload(record, [99519]).rfi.assignee_ids, [99519]);
+  });
+
   it('includes description, reporter, site, location and photo in the body', () => {
-    const body = buildRfiPayload(record).rfi.questions[0].body;
+    const body = buildRfiPayload(record).rfi.question.body;
     assert.match(body, /Loose handrail/);
     assert.match(body, /Mike Alvarez \(\+15555550101\)/);
     assert.match(body, /Site: site-1/);
@@ -39,7 +43,7 @@ describe('buildRfiPayload', () => {
 
   it('omits optional lines that are absent', () => {
     const bare = { ...record, siteId: null, geotag: null, photoUrl: null };
-    const body = buildRfiPayload(bare).rfi.questions[0].body;
+    const body = buildRfiPayload(bare).rfi.question.body;
     assert.doesNotMatch(body, /Site:/);
     assert.doesNotMatch(body, /Location:/);
     assert.doesNotMatch(body, /Photo:/);

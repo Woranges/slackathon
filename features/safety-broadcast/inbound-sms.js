@@ -17,6 +17,28 @@ import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue
 // for the Slack thread key that the same flow uses in the DM path.
 const SMS_THREAD = 'sms';
 
+// Twilio re-delivers a webhook if we don't respond within its timeout (~15s), and
+// this handler makes LLM calls that can approach that — so a slow message gets
+// retried and would otherwise be processed twice (duplicate cards/RFIs). Track
+// the message SIDs we've already accepted and ignore repeats. In-memory is fine:
+// retries arrive within minutes, and a process restart only risks re-processing a
+// message that was in flight across the restart.
+/** @type {Set<string>} */
+const processedMessageSids = new Set();
+
+/**
+ * @param {string | undefined} sid
+ * @returns {boolean} true if this SID was already handled (caller should skip).
+ */
+function isDuplicate(sid) {
+  if (!sid) return false;
+  if (processedMessageSids.has(sid)) return true;
+  processedMessageSids.add(sid);
+  // Bound memory — these are throwaway once their retry window has passed.
+  if (processedMessageSids.size > 1000) processedMessageSids.clear();
+  return false;
+}
+
 const CLASSIFY_SYSTEM_PROMPT = `\
 Classify an incoming worker SMS reply to a construction site. Always call classify_reply — \
 never respond in plain text.
@@ -88,7 +110,11 @@ function escapeXml(s) {
  * @returns {Promise<void>}
  */
 async function runIssueIntake(from, body, photoUrl, client, res) {
-  const { reply, done, record } = await advanceIssueIntake(from, SMS_THREAD, body, { phone: from, photoUrl });
+  // A photo-only MMS/WhatsApp message has an empty Body; nudge the model so it
+  // knows a photo arrived (and files) rather than seeing a blank turn. Mirrors
+  // the Slack DM path in listeners/events/message.js.
+  const text = body || (photoUrl ? '[photo attached]' : body);
+  const { reply, done, record } = await advanceIssueIntake(from, SMS_THREAD, text, { phone: from, photoUrl });
   if (done && record) await postIssueCard(client, record);
   res
     .status(200)
@@ -103,7 +129,15 @@ async function runIssueIntake(from, body, photoUrl, client, res) {
  * @returns {Promise<void>}
  */
 export async function handleTwilioInboundSms(req, res, client) {
-  const from = req.body?.From;
+  // Ignore Twilio's retry re-deliveries of a message we've already accepted.
+  if (isDuplicate(req.body?.MessageSid ?? req.body?.SmsMessageSid)) {
+    res.status(200).type('text/xml').send('<Response></Response>');
+    return;
+  }
+
+  // Twilio prefixes WhatsApp senders with "whatsapp:"; strip it so the value is a
+  // clean E.164 for worker lookup, the flow key, and the card/RFI (SMS has no prefix).
+  const from = (req.body?.From ?? '').replace(/^whatsapp:/i, '') || null;
   const body = req.body?.Body ?? '';
   const photoUrl = req.body?.MediaUrl0 ?? null;
 

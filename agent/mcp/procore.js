@@ -41,10 +41,10 @@ export function getProcoreMcpServerConfig() {
 // at runtime and unit-tested. Everything degrades gracefully: when the vars
 // aren't set, isProcoreConfigured() is false and callers skip the write.
 //
-// CAVEAT: the exact endpoints, the RFI payload shape, and the token host below
-// are best-effort and UNVERIFIED against a live sandbox — confirm them against
-// developers.procore.com once credentials exist, then adjust buildRfiPayload +
-// the URLs. They're deliberately kept in this one place for easy correction.
+// VERIFIED against a live developer sandbox on 2026-07-10: the client-credentials
+// token grant, the RFI create endpoint, and the payload shape below all work.
+// Payload must use `question` (singular object) and a non-empty `assignee_ids`
+// (resolved via resolveAssigneeIds); the create response returns `link` + `id`.
 
 /**
  * @returns {{ baseUrl?: string, authUrl?: string, clientId?: string, clientSecret?: string, companyId?: string, projectId?: string }}
@@ -71,10 +71,13 @@ export function isProcoreConfigured() {
 
 /**
  * Map a structured issue record to a Procore RFI create payload. Pure — no I/O.
+ * Verified against the live sandbox: the create endpoint requires `question`
+ * (singular object, not `questions[]`) and a non-empty `assignee_ids`.
  * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
+ * @param {number[]} [assigneeIds] - Procore project user ids to assign the RFI to.
  * @returns {Record<string, unknown>}
  */
-export function buildRfiPayload(record) {
+export function buildRfiPayload(record, assigneeIds = []) {
   const lines = [
     record.description,
     '',
@@ -88,7 +91,8 @@ export function buildRfiPayload(record) {
   return {
     rfi: {
       subject: `Field issue: ${record.area}`,
-      questions: [{ body: lines.join('\n') }],
+      assignee_ids: assigneeIds,
+      question: { body: lines.join('\n') },
     },
   };
 }
@@ -126,6 +130,37 @@ async function getAccessToken() {
   return cachedToken.accessToken;
 }
 
+/** @type {number[] | null} */
+let cachedAssigneeIds = null;
+
+/**
+ * Resolve the RFI assignee ids. Procore requires at least one. Prefers an
+ * explicit `PROCORE_RFI_ASSIGNEE_ID` override; otherwise fetches the project's
+ * users once and uses the first active one (cached for the process lifetime).
+ * @param {string} token
+ * @param {ReturnType<typeof procoreEnv>} e
+ * @returns {Promise<number[]>}
+ */
+async function resolveAssigneeIds(token, e) {
+  const override = process.env.PROCORE_RFI_ASSIGNEE_ID;
+  if (override) return [Number(override)];
+  if (cachedAssigneeIds) return cachedAssigneeIds;
+
+  const res = await fetch(`${e.baseUrl}/rest/v1.0/projects/${e.projectId}/users?per_page=100`, {
+    headers: { Authorization: `Bearer ${token}`, 'Procore-Company-Id': String(e.companyId) },
+  });
+  if (!res.ok) {
+    throw new Error(`Procore users fetch failed: ${res.status} ${await res.text()}`);
+  }
+  const users = /** @type {Array<{ id: number, is_active?: boolean }>} */ (await res.json());
+  const assignee = users.find((u) => u.is_active) ?? users[0];
+  if (!assignee) {
+    throw new Error('Procore: no project users available to assign the RFI to');
+  }
+  cachedAssigneeIds = [assignee.id];
+  return cachedAssigneeIds;
+}
+
 /**
  * Create an RFI in Procore from a structured issue record.
  * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
@@ -139,6 +174,7 @@ export async function createProcoreRfi(record) {
   }
   const e = procoreEnv();
   const token = await getAccessToken();
+  const assigneeIds = await resolveAssigneeIds(token, e);
   const res = await fetch(`${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis`, {
     method: 'POST',
     headers: {
@@ -146,11 +182,12 @@ export async function createProcoreRfi(record) {
       'Content-Type': 'application/json',
       'Procore-Company-Id': String(e.companyId),
     },
-    body: JSON.stringify(buildRfiPayload(record)),
+    body: JSON.stringify(buildRfiPayload(record, assigneeIds)),
   });
   if (!res.ok) {
     throw new Error(`Procore RFI create failed: ${res.status} ${await res.text()}`);
   }
-  const json = /** @type {{ id: number, html_url?: string }} */ (await res.json());
-  return { id: json.id, url: json.html_url ?? null };
+  // Sandbox returns `link` (web URL) and `id`; older/other shapes may use html_url.
+  const json = /** @type {{ id: number, link?: string, html_url?: string }} */ (await res.json());
+  return { id: json.id, url: json.link ?? json.html_url ?? null };
 }
