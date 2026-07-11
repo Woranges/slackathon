@@ -21,7 +21,11 @@ describe('formatBroadcastStatus', () => {
 describe('escalateUnacknowledged', () => {
   it('voice-calls only the workers who have not acknowledged', async () => {
     const broadcast = await createBroadcast('site-1', 'Evacuate zone 3');
-    const workers = await getWorkersBySite('site-1'); // Mike + Sofia
+    // Scope to Mike + Sofia explicitly so this doesn't depend on how many other
+    // workers happen to be seeded on site-1.
+    const workers = (await getWorkersBySite('site-1')).filter((w) =>
+      ['+15555550101', '+15555550102'].includes(w.phone),
+    );
     await recordBroadcastAck(broadcast.id, '+15555550101'); // Mike acknowledges
 
     /** @type {Array<{ to: string, message: string }>} */
@@ -53,7 +57,10 @@ describe('escalateUnacknowledged', () => {
 
   it('keeps calling the remaining workers when one call throws', async () => {
     const broadcast = await createBroadcast('site-1', 'Crane failure');
-    const workers = await getWorkersBySite('site-1'); // nobody has acknowledged
+    // Mike + Sofia only (see note above); nobody has acknowledged.
+    const workers = (await getWorkersBySite('site-1')).filter((w) =>
+      ['+15555550101', '+15555550102'].includes(w.phone),
+    );
 
     /** @type {string[]} */
     const attempted = [];
