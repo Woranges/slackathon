@@ -46,7 +46,7 @@ describe('getWorkerBySlackUserId', () => {
 describe('getWorkersBySite', () => {
   it('returns every worker on a site', async () => {
     const workers = await getWorkersBySite('site-1');
-    assert.deepStrictEqual(workers.map((w) => w.name).sort(), ['Mike Alvarez', 'Sofia Reyes']);
+    assert.deepStrictEqual(workers.map((w) => w.name).sort(), ['Mike Alvarez', 'Sofia Reyes', 'Warren Zhang']);
   });
 
   it('returns an empty array for an unknown site', async () => {
@@ -67,16 +67,16 @@ describe('createBroadcast', () => {
 
 describe('recordBroadcastAck / getAckStatus', () => {
   it('counts acknowledgments against the number of workers on the site', async () => {
-    // site-1 has two seeded workers (Mike + Sofia).
+    // site-1 has three seeded workers (Warren, Mike, Sofia).
     const broadcast = await createBroadcast('site-1', 'Evacuate zone 3');
 
     let status = await getAckStatus(broadcast.id);
-    assert.deepStrictEqual(status, { acknowledged: 0, total: 2 });
+    assert.deepStrictEqual(status, { acknowledged: 0, total: 3 });
 
     await recordBroadcastAck(broadcast.id, '+15555550101');
     await recordBroadcastAck(broadcast.id, '+15555550102');
     status = await getAckStatus(broadcast.id);
-    assert.deepStrictEqual(status, { acknowledged: 2, total: 2 });
+    assert.deepStrictEqual(status, { acknowledged: 2, total: 3 });
   });
 
   it('counts a repeated acknowledgment from the same worker only once', async () => {
