@@ -198,26 +198,57 @@ async function downloadRfiPhoto(record) {
 }
 
 /**
- * Flatten the RFI payload + photo into a multipart body using Procore's
- * bracket-notation field names, so the image uploads as a real RFI attachment.
- * @param {ReturnType<typeof buildRfiPayload>} payload
+ * Upload a photo to Procore's file service ("prostore") and return its upload
+ * uuid, to reference as an RFI attachment. This 3-step flow (create upload ->
+ * POST bytes to the returned S3 presigned form -> reference the uuid) is used
+ * instead of a plain multipart RFI attachment because it preserves the real
+ * filename + content-type (via S3 Content-Disposition), so the attachment
+ * downloads as a proper `issue-photo.jpg` rather than an extensionless blob.
+ * (Procore's RFI viewer still won't preview images inline — a Procore-side
+ * limitation — but the download is at least openable.) Best-effort: null on any
+ * failure, so the RFI is never blocked on the photo.
+ * @param {string} token
+ * @param {ReturnType<typeof procoreEnv>} e
  * @param {{ bytes: ArrayBuffer, contentType: string, filename: string }} photo
- * @returns {FormData}
+ * @returns {Promise<string | null>}
  */
-function toRfiMultipart(payload, photo) {
-  const rfi = /** @type {any} */ (payload.rfi);
-  const fd = new FormData();
-  fd.set('rfi[subject]', String(rfi.subject));
-  for (const id of rfi.assignee_ids ?? []) fd.append('rfi[assignee_ids][]', String(id));
-  fd.set('rfi[question][body]', String(rfi.question?.body ?? ''));
-  fd.append('rfi[question][attachments][][data]', new Blob([photo.bytes], { type: photo.contentType }), photo.filename);
-  return fd;
+async function uploadPhotoToProcore(token, e, photo) {
+  try {
+    const createRes = await fetch(`${e.baseUrl}/rest/v1.0/companies/${e.companyId}/uploads`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Procore-Company-Id': String(e.companyId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ response_filename: photo.filename, response_content_type: photo.contentType }),
+    });
+    if (!createRes.ok) {
+      console.error(`[procore] upload create failed: ${createRes.status}`);
+      return null;
+    }
+    const up = /** @type {{ uuid: string, url: string, fields: Record<string, string> }} */ (await createRes.json());
+
+    // POST the bytes to the returned S3 presigned form (the file field must be last).
+    const form = new FormData();
+    for (const [k, v] of Object.entries(up.fields ?? {})) form.append(k, String(v));
+    form.append('file', new Blob([photo.bytes], { type: photo.contentType }), photo.filename);
+    const s3Res = await fetch(up.url, { method: 'POST', body: form });
+    if (!s3Res.ok) {
+      console.error(`[procore] S3 upload failed: ${s3Res.status}`);
+      return null;
+    }
+    return up.uuid ?? null;
+  } catch (err) {
+    console.error(`[procore] photo upload error: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 /**
  * Create an RFI in Procore from a structured issue record. When the record
- * carries a downloadable photo, it's uploaded as a real RFI attachment via a
- * multipart create; otherwise a plain JSON create is used.
+ * carries a downloadable photo, it's uploaded to Procore's file service first
+ * and referenced as an RFI attachment; the RFI itself is always a JSON create.
  * @param {import('../../features/procore-issue-intake/issue-record.js').IssueRecord} record
  * @returns {Promise<{ id: number, url: string | null }>}
  */
@@ -231,27 +262,25 @@ export async function createProcoreRfi(record) {
   const token = await getAccessToken();
   const assigneeIds = await resolveAssigneeIds(token, e);
   const payload = buildRfiPayload(record, assigneeIds);
+
+  // Attach the photo (best-effort) by uploading it and referencing the uuid.
   const photo = await downloadRfiPhoto(record);
+  if (photo) {
+    const uuid = await uploadPhotoToProcore(token, e, photo);
+    if (uuid) {
+      /** @type {any} */ (payload.rfi).question.attachments = [{ upload_uuid: uuid }];
+    }
+  }
 
-  const url = `${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis`;
-  /** @type {RequestInit} */
-  const req = photo
-    ? {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Procore-Company-Id': String(e.companyId) },
-        body: toRfiMultipart(payload, photo),
-      }
-    : {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Procore-Company-Id': String(e.companyId),
-        },
-        body: JSON.stringify(payload),
-      };
-
-  const res = await fetch(url, req);
+  const res = await fetch(`${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Procore-Company-Id': String(e.companyId),
+    },
+    body: JSON.stringify(payload),
+  });
   if (!res.ok) {
     throw new Error(`Procore RFI create failed: ${res.status} ${await res.text()}`);
   }
