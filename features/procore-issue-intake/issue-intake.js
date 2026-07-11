@@ -1,73 +1,108 @@
 // Owner: procore-issue-intake feature.
 //
-// LLM-driven structured issue-intake flow. A worker starts it by
-// texting/typing "issue"; from there the model gathers area + description
-// (photo optional) from however the worker actually phrases it — in one
-// message or several, in any order — rather than forcing rigid one-question
-// steps. Trigger detection itself stays a cheap keyword check (no LLM cost
-// on messages that were never going to start this flow); everything after
-// that goes through lib/llm/ once triggered.
+// Deterministic, code-controlled issue-intake flow. A worker starts it by
+// texting/typing "issue"; from there a slot-filling state machine gathers the
+// report. The key design choice: THE CODE OWNS THE FLOW, the LLM only extracts
+// fields from each message. Earlier this whole conversation was LLM-driven and
+// it was unreliable — it would skip a required field, ask twice, or forget the
+// photo. Now the model is a pure extractor and the state machine guarantees the
+// order: collect the required slots -> ask for a photo exactly once -> file ->
+// confirm. The photo is tracked entirely in code (never handed to the model),
+// which is what previously got "forgotten".
+//
+// Two streams, classified from the first message:
+//   - safety: an immediate hazard / danger / injury risk. Extra required slot:
+//     severity. Filed as a high-priority RFI tagged SAFETY.
+//   - rfi: a question or field condition needing an office/engineer answer.
+//     Optional slot: a drawing/spec reference. Filed as a standard RFI.
 
 import { createProcoreRfi, isProcoreConfigured } from '../../agent/mcp/procore.js';
 import { getWorkerByPhone, getWorkerBySlackUserId } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
-import { buildIssueCardBlocks } from './issue-card.js';
 import { buildIssueRecord } from './issue-record.js';
 
-const SYSTEM_PROMPT = `\
-You are helping a construction worker report a site issue over text messaging.
+/**
+ * @typedef {'safety' | 'rfi'} ReportStream
+ * @typedef {Object} Slots
+ * @property {string | null} location
+ * @property {string | null} description
+ * @property {string | null} severity - Safety only: immediate_danger | urgent | normal.
+ * @property {string | null} specReference - RFI only: a drawing/spec/detail reference.
+ * @typedef {Object} FlowState
+ * @property {ReportStream | null} stream
+ * @property {Slots} slots
+ * @property {boolean} photoAsked
+ * @property {{ photoSlackFileId: string | null, photoUrl: string | null }} photo
+ * @property {string | null} lastQuestion
+ */
 
-Gather two required pieces of information:
-- area: the location/area of the issue (e.g. "3rd floor, east stairwell")
-- description: a one-line description of the problem
+const EXTRACT_SYSTEM = `\
+You extract structured fields from a construction worker's message during a site issue report.
+Always call update_report; never reply in plain text. Include ONLY fields actually present in
+their latest message — omit anything not mentioned (do not guess or repeat prior values).
 
-Ask short, casual follow-up questions for whatever's missing. If the worker already gave \
-you multiple pieces of information in one message, don't force them through a rigid \
-one-field-at-a-time order — just ask about whatever's still missing.
+report_type: "safety" for an immediate hazard, danger, or injury risk; "rfi" for a question or
+field condition needing an answer/clarification from the office or engineer.`;
 
-Once you have BOTH area and description, ask once if they can send a photo of the issue \
-(a photo is helpful but optional). On their next reply — whether they send/mention a photo, \
-decline, or ignore it — call the file_issue tool immediately with what you have. Never \
-require a photo, never ask for it more than once, and don't ask for confirmation.`;
+const PHOTO_QUESTION = 'Thanks. Can you send a photo of it? (Optional — just reply "no" if you can\'t.)';
 
 /**
- * @param {(args: { area: string, description: string }) => Promise<Record<string, unknown>>} onFileIssue
+ * The extraction tool. Its handler captures whatever the model parsed out of the
+ * latest message; the state machine (not the model) decides what to do with it.
+ * @param {(fields: Record<string, string>) => void} onExtract
  * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
-function createFileIssueTool(onFileIssue) {
+function createUpdateReportTool(onExtract) {
   return {
     functionDeclaration: {
-      name: 'file_issue',
-      description: 'File the collected issue report once area and description are both known.',
-      // No photo field: the photo is captured deterministically by the listener
-      // (an SMS media URL or a Slack DM file id, latched onto the flow), never
-      // supplied by the model — exposing a photo_url here just invited the model
-      // to hallucinate a URL, which then failed to render as an image block.
+      name: 'update_report',
+      description: 'Record the report details found in the latest worker message.',
       parametersJsonSchema: {
         type: 'object',
         properties: {
-          area: { type: 'string', description: 'Location/area of the issue.' },
-          description: { type: 'string', description: 'One-line description of the issue.' },
+          report_type: {
+            type: 'string',
+            enum: ['safety', 'rfi'],
+            description:
+              'safety = immediate hazard/danger/injury risk; rfi = a question or field issue needing an office answer.',
+          },
+          location: { type: 'string', description: 'Where it is — building/floor/area. Omit if not mentioned.' },
+          description: { type: 'string', description: 'What the issue or question is. Omit if not mentioned.' },
+          severity: {
+            type: 'string',
+            enum: ['immediate_danger', 'urgent', 'normal'],
+            description: 'Safety reports only: how urgent. Omit if not a safety report or not mentioned.',
+          },
+          spec_reference: {
+            type: 'string',
+            description:
+              'RFIs only: a drawing/spec/detail reference if mentioned (e.g. "Detail 5/A-301"). Omit if none.',
+          },
         },
-        required: ['area', 'description'],
+        required: ['report_type'],
       },
     },
-    handler: (args) => onFileIssue(/** @type {{ area: string, description: string }} */ (args)),
+    handler: async (args) => {
+      onExtract(/** @type {Record<string, string>} */ (args));
+      return { output: 'ok' };
+    },
   };
 }
 
-/** @type {Map<string, import('@google/genai').Content[]>} */
+/** @type {Map<string, FlowState>} */
 const activeFlows = new Map();
 
-// A worker often sends the photo on a different turn than the one where the model
-// finally calls file_issue (e.g. they send the photo, the model says "thanks",
-// then files on the next reply). The per-call `context` only carries the photo
-// from the current message, so without this the photo would be lost. Latch the
-// most recent photo seen anywhere in the flow, keyed like activeFlows, and clear
-// it when the flow completes.
-/** @type {Map<string, { photoSlackFileId: string | null, photoUrl: string | null }>} */
-const flowPhotos = new Map();
+/** @returns {FlowState} */
+function newFlowState() {
+  return {
+    stream: null,
+    slots: { location: null, description: null, severity: null, specReference: null },
+    photoAsked: false,
+    photo: { photoSlackFileId: null, photoUrl: null },
+    lastQuestion: null,
+  };
+}
 
 /**
  * @param {string} channelId
@@ -96,11 +131,124 @@ export function hasActiveFlow(channelId, threadTs) {
 }
 
 /**
- * @param {import('@google/genai').Content[]} history
- * @returns {boolean}
+ * The required slots for a stream, in the order they're asked.
+ * @param {ReportStream} stream
+ * @returns {(keyof Slots)[]}
  */
-function wasFileIssueCalled(history) {
-  return history.some((turn) => turn.parts?.some((p) => p.functionCall?.name === 'file_issue'));
+function requiredSlots(stream) {
+  return stream === 'safety' ? ['location', 'description', 'severity'] : ['location', 'description'];
+}
+
+/**
+ * Pure flow decision: given the current state, what happens next? Kept pure so
+ * the ordering guarantees (required slots first, photo asked exactly once, then
+ * file) are unit-testable without the LLM.
+ * @param {FlowState} state
+ * @returns {{ action: 'ask', field: keyof Slots } | { action: 'askPhoto' } | { action: 'file' }}
+ */
+export function nextStep(state) {
+  const stream = state.stream ?? 'rfi';
+  const missing = requiredSlots(stream).find((s) => !state.slots[s]);
+  if (missing) return { action: 'ask', field: missing };
+  if (!state.photoAsked) return { action: 'askPhoto' };
+  return { action: 'file' };
+}
+
+/**
+ * The deterministic question for a missing slot.
+ * @param {keyof Slots} field
+ * @param {ReportStream} stream
+ * @returns {string}
+ */
+export function questionFor(field, stream) {
+  switch (field) {
+    case 'location':
+      return 'Where is this — which building, floor, and area?';
+    case 'description':
+      return stream === 'safety' ? "Got it. What's the hazard?" : "Got it. What's the question or issue?";
+    case 'severity':
+      return 'Is anyone in immediate danger right now, or is this a hazard to flag for follow-up?';
+    default:
+      return 'Can you tell me a bit more?';
+  }
+}
+
+/**
+ * Run the extractor over one message. Returns the fields the model parsed out
+ * (report_type, location, description, severity, spec_reference).
+ * @param {string} text
+ * @param {FlowState} state
+ * @returns {Promise<Record<string, string>>}
+ */
+async function extractFields(text, state) {
+  /** @type {Record<string, string>} */
+  let fields = {};
+  const tool = createUpdateReportTool((f) => {
+    fields = f;
+  });
+
+  const known = JSON.stringify(state.slots);
+  const context = state.lastQuestion
+    ? `You just asked the worker: "${state.lastQuestion}". Map their reply to the right field.`
+    : 'This is the start of the report.';
+  const systemPrompt = `${EXTRACT_SYSTEM}\n\nKnown so far: ${known}\n${context}`;
+
+  await runLlmTurn({ systemPrompt, history: [], text, tools: [tool] });
+  return fields;
+}
+
+/**
+ * Assemble the record and write the Procore RFI (awaited, so the confirmation
+ * can cite the RFI number). Returns the record + the RFI result (null when
+ * Procore is unconfigured or the write fails — the report is never blocked on it).
+ * @param {FlowState} state
+ * @param {IntakeContext} context
+ * @returns {Promise<{ record: import('./issue-record.js').IssueRecord, rfi: { id: number, url: string | null } | null }>}
+ */
+async function fileReport(state, context) {
+  const worker =
+    (context.phone ? await getWorkerByPhone(context.phone) : null) ??
+    (context.slackUserId ? await getWorkerBySlackUserId(context.slackUserId) : null);
+
+  // TODO: translate using worker?.preferredLanguage once translate.js is wired.
+  const englishDescription = await translateText(state.slots.description ?? '', 'en');
+
+  const record = buildIssueRecord({
+    phone: context.phone ?? 'unknown',
+    worker,
+    slackUserId: context.slackUserId,
+    area: state.slots.location ?? 'Unspecified',
+    description: englishDescription,
+    reportType: state.stream ?? 'rfi',
+    severity: state.slots.severity,
+    specReference: state.slots.specReference,
+    photoUrl: state.photo.photoUrl,
+    photoSlackFileId: state.photo.photoSlackFileId,
+  });
+
+  /** @type {{ id: number, url: string | null } | null} */
+  let rfi = null;
+  if (isProcoreConfigured()) {
+    try {
+      rfi = await createProcoreRfi(record);
+      console.log(`Procore RFI #${rfi.id} created`);
+    } catch (err) {
+      console.error(`Procore write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { record, rfi };
+}
+
+/**
+ * @param {ReportStream} stream
+ * @param {{ id: number, url: string | null } | null} rfi
+ * @returns {string}
+ */
+function confirmation(stream, rfi) {
+  const kind = stream === 'safety' ? 'safety report' : 'RFI';
+  return rfi
+    ? `✅ Thanks — I've filed this as ${kind} #${rfi.id} in Procore. The team will follow up.`
+    : `✅ Thanks — your ${kind} has been logged and the team will follow up.`;
 }
 
 /**
@@ -115,84 +263,51 @@ function wasFileIssueCalled(history) {
  */
 
 /**
- * Advance the issue-intake flow by one message. When `file_issue` fires this
- * assembles the structured record (issue-record.js) and management-card blocks
- * (issue-card.js) and returns them; posting the card / writing to Procore is
- * wired by the caller, not here.
+ * Advance the intake flow by one message. The state machine (not the model)
+ * decides whether to ask for a missing slot, ask for a photo, or file.
  * @param {string} channelId
  * @param {string} threadTs
  * @param {string} text
  * @param {IntakeContext} [context]
- * @returns {Promise<{ reply: string, done: boolean, record?: import('./issue-record.js').IssueRecord, cardBlocks?: import('@slack/types').KnownBlock[] }>}
+ * @returns {Promise<{ reply: string, done: boolean, record?: import('./issue-record.js').IssueRecord, rfi?: { id: number, url: string | null } | null }>}
  */
 export async function advanceIssueIntake(channelId, threadTs, text, context = {}) {
   const k = key(channelId, threadTs);
-  const history = activeFlows.get(k) ?? [];
+  const state = activeFlows.get(k) ?? newFlowState();
+  activeFlows.set(k, state);
 
-  // Latch any photo from this turn onto the flow so it survives to file_issue,
-  // even if the model files on a later turn that carries no photo.
-  const priorPhoto = flowPhotos.get(k);
-  const photo = {
-    photoSlackFileId: context.photoSlackFileId ?? priorPhoto?.photoSlackFileId ?? null,
-    photoUrl: context.photoUrl ?? priorPhoto?.photoUrl ?? null,
-  };
-  flowPhotos.set(k, photo);
+  // Latch the photo in code — the model never sees or manages it, which is what
+  // previously got it "forgotten". Any photo seen on any turn survives to filing.
+  if (context.photoSlackFileId) state.photo.photoSlackFileId = context.photoSlackFileId;
+  if (context.photoUrl) state.photo.photoUrl = context.photoUrl;
 
-  /** @type {import('./issue-record.js').IssueRecord | undefined} */
-  let filedRecord;
-  /** @type {import('@slack/types').KnownBlock[] | undefined} */
-  let filedCardBlocks;
-
-  const fileIssueTool = createFileIssueTool(async ({ area, description }) => {
-    // Resolve the reporter: by phone (SMS path) or Slack user id (DM path).
-    const worker =
-      (context.phone ? await getWorkerByPhone(context.phone) : null) ??
-      (context.slackUserId ? await getWorkerBySlackUserId(context.slackUserId) : null);
-
-    // TODO: translate into English using the reporter's preferred_language
-    // (worker?.preferredLanguage) once translate.js is wired; passthrough today.
-    const englishDescription = await translateText(description, 'en');
-
-    const record = buildIssueRecord({
-      phone: context.phone ?? 'unknown',
-      worker,
-      slackUserId: context.slackUserId,
-      area,
-      description: englishDescription,
-      photoUrl: photo.photoUrl,
-      photoSlackFileId: photo.photoSlackFileId,
-    });
-    filedRecord = record;
-    filedCardBlocks = buildIssueCardBlocks(record);
-
-    // Fire-and-forget the Procore write so the worker's confirmation isn't
-    // delayed by the round-trip; log the outcome. Skipped when unconfigured.
-    if (isProcoreConfigured()) {
-      createProcoreRfi(record)
-        .then((r) => console.log(`Procore RFI #${r.id} created`))
-        .catch((err) => console.error(`Procore write failed: ${err instanceof Error ? err.message : String(err)}`));
+  // Only run the extractor when there's text to parse (a photo-only message has
+  // none). Skipping it also saves an LLM call on the photo turn.
+  if (text?.trim()) {
+    const fields = await extractFields(text, state);
+    if (!state.stream && (fields.report_type === 'safety' || fields.report_type === 'rfi')) {
+      state.stream = fields.report_type;
     }
+    if (fields.location) state.slots.location = fields.location;
+    if (fields.description) state.slots.description = fields.description;
+    if (fields.severity) state.slots.severity = fields.severity;
+    if (fields.spec_reference) state.slots.specReference = fields.spec_reference;
+  }
+  // If the model never classified (e.g. a photo-only opener), default to rfi.
+  if (!state.stream) state.stream = 'rfi';
 
-    const hasPhoto = Boolean(record.photoUrl || record.photoSlackFileId);
-    return {
-      output: `Filed issue: area="${record.area}", reporter="${record.reporter.name}", photo=${hasPhoto ? 'yes' : 'none'}.`,
-    };
-  });
-
-  const { responseText, history: newHistory } = await runLlmTurn({
-    systemPrompt: SYSTEM_PROMPT,
-    history,
-    text,
-    tools: [fileIssueTool],
-  });
-
-  const done = wasFileIssueCalled(newHistory);
-  if (done) {
-    activeFlows.delete(k);
-    flowPhotos.delete(k);
-  } else {
-    activeFlows.set(k, newHistory);
+  const step = nextStep(state);
+  if (step.action === 'ask') {
+    state.lastQuestion = questionFor(step.field, state.stream);
+    return { reply: state.lastQuestion, done: false };
+  }
+  if (step.action === 'askPhoto') {
+    state.photoAsked = true;
+    state.lastQuestion = PHOTO_QUESTION;
+    return { reply: PHOTO_QUESTION, done: false };
   }
 
-  return { reply: responseText, done, record: filedRecord, cardBlocks: filedCardBlocks };
+  const { record, rfi } = await fileReport(state, context);
+  activeFlows.delete(k);
+  return { reply: confirmation(state.stream, rfi), done: true, record, rfi };
 }

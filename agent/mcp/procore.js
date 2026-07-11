@@ -78,11 +78,14 @@ export function isProcoreConfigured() {
  * @returns {Record<string, unknown>}
  */
 export function buildRfiPayload(record, assigneeIds = []) {
+  const isSafety = record.reportType === 'safety';
   const lines = [
     record.description,
     '',
     `Reported by: ${record.reporter.name} (${record.reporter.phone})`,
     record.siteId ? `Site: ${record.siteId}` : null,
+    isSafety && record.severity ? `Severity: ${record.severity}` : null,
+    !isSafety && record.specReference ? `Reference: ${record.specReference}` : null,
     record.geotag ? `Location: ${record.geotag.lat}, ${record.geotag.lng}` : null,
     record.photoUrl ? `Photo: ${record.photoUrl}` : null,
     `Reported at: ${record.timestamp}`,
@@ -90,7 +93,10 @@ export function buildRfiPayload(record, assigneeIds = []) {
 
   return {
     rfi: {
-      subject: `Field issue: ${record.area}`,
+      // Safety reports get a SAFETY-prefixed subject so they're triageable in
+      // Procore's RFI list. (Structured priority/due_date are a follow-up — they
+      // need verifying against the live API before we risk a 400 on the create.)
+      subject: isSafety ? `SAFETY: ${record.area}` : `Field issue: ${record.area}`,
       assignee_ids: assigneeIds,
       question: { body: lines.join('\n') },
     },

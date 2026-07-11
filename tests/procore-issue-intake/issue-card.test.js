@@ -109,7 +109,7 @@ describe('postIssueCard', () => {
     assert.strictEqual(calls.posts.length, 1);
     assert.strictEqual(calls.posts[0].channel, 'C123MGMT');
     assert.ok(Array.isArray(calls.posts[0].blocks));
-    assert.match(calls.posts[0].text, /New site issue reported/);
+    assert.match(calls.posts[0].text, /New RFI reported/);
     // No photo on this record → no thread upload.
     assert.strictEqual(calls.uploads.length, 0);
   });

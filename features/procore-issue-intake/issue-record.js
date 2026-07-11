@@ -17,12 +17,16 @@
  */
 
 /**
+ * @typedef {'safety' | 'rfi'} ReportType
  * @typedef {Object} IssueRecord
  * @property {{ name: string, phone: string }} reporter - `name` may be a Slack
  *   mention (`<@U…>`) on the DM path, which renders as the user's name.
  * @property {string | null} siteId
  * @property {string} area
  * @property {string} description - Expected already translated to English by the caller.
+ * @property {ReportType} [reportType] - Which intake stream produced this (safety vs rfi).
+ * @property {string | null} [severity] - Safety only: immediate_danger | urgent | normal.
+ * @property {string | null} [specReference] - RFI only: a drawing/spec/detail reference.
  * @property {string | null} photoUrl - External photo URL (e.g. a Twilio media URL).
  * @property {string | null} photoSlackFileId - Slack file id for a photo already
  *   hosted in Slack (e.g. uploaded in a DM); preferred over photoUrl for rendering.
@@ -39,6 +43,9 @@
  *   `<@…>` mention for the name when no worker record is found.
  * @param {string} params.area
  * @param {string} params.description
+ * @param {ReportType} [params.reportType]
+ * @param {string | null} [params.severity]
+ * @param {string | null} [params.specReference]
  * @param {string | null} [params.photoUrl]
  * @param {string | null} [params.photoSlackFileId]
  * @param {Geotag | null} [params.geotag]
@@ -51,6 +58,9 @@ export function buildIssueRecord({
   slackUserId,
   area,
   description,
+  reportType = 'rfi',
+  severity = null,
+  specReference = null,
   photoUrl = null,
   photoSlackFileId = null,
   geotag = null,
@@ -64,6 +74,9 @@ export function buildIssueRecord({
     siteId: worker?.siteId ?? null,
     area,
     description,
+    reportType,
+    severity,
+    specReference,
     photoUrl,
     photoSlackFileId,
     geotag,

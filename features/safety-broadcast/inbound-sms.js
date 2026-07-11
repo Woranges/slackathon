@@ -110,12 +110,10 @@ function escapeXml(s) {
  * @returns {Promise<void>}
  */
 async function runIssueIntake(from, body, photoUrl, client, res) {
-  // A photo-only MMS/WhatsApp message has an empty Body; nudge the model so it
-  // knows a photo arrived (and files) rather than seeing a blank turn. Mirrors
-  // the Slack DM path in listeners/events/message.js.
-  const text = body || (photoUrl ? '[photo attached]' : body);
-  const { reply, done, record } = await advanceIssueIntake(from, SMS_THREAD, text, { phone: from, photoUrl });
-  if (done && record) await postIssueCard(client, record);
+  // The intake engine tracks the photo in code, so a photo-only message (empty
+  // Body) just passes empty text and gets latched via photoUrl — no hint needed.
+  const { reply, done, record, rfi } = await advanceIssueIntake(from, SMS_THREAD, body, { phone: from, photoUrl });
+  if (done && record) await postIssueCard(client, record, rfi);
   res
     .status(200)
     .type('text/xml')
