@@ -161,8 +161,65 @@ function parseAssignValue(raw) {
 }
 
 /**
+ * Pull a `*Label:*\nvalue` field out of the card's blocks (section text or the
+ * fields array). Returns null when the label isn't present.
+ * @param {any[] | undefined} blocks
+ * @param {string} label - e.g. "Area" (without the surrounding markup).
+ * @returns {string | null}
+ */
+function cardField(blocks, label) {
+  const prefix = `*${label}:*`;
+  for (const b of blocks ?? []) {
+    if (b?.type !== 'section') continue;
+    for (const el of [b.text, ...(b.fields ?? [])]) {
+      const t = el?.text;
+      if (typeof t === 'string' && t.startsWith(prefix)) return t.slice(prefix.length).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the Procore RFI URL from the card's link context block, if present.
+ * @param {any[] | undefined} blocks
+ * @returns {string | null}
+ */
+function cardRfiUrl(blocks) {
+  for (const b of blocks ?? []) {
+    if (b?.type !== 'context') continue;
+    for (const el of b.elements ?? []) {
+      const m = typeof el?.text === 'string' ? el.text.match(/<(https?:\/\/[^|>]+)\|[^>]*RFI/) : null;
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
+/**
+ * Compose the SMS an assignee receives, pulling the real issue details out of the
+ * card blocks (the dropdown option value is too small to carry them). Pure.
+ * @param {any[] | undefined} blocks - The card's blocks (from body.message.blocks).
+ * @param {number | null} rfiId
+ * @returns {string}
+ */
+export function buildAssignmentMessage(blocks, rfiId) {
+  const area = cardField(blocks, 'Area');
+  const description = cardField(blocks, 'Description');
+  const site = cardField(blocks, 'Site');
+  const url = cardRfiUrl(blocks);
+  const lines = [
+    `🔧 You've been assigned a new RFI${rfiId ? ` (#${rfiId})` : ''}${site ? ` at ${site}` : ''}.`,
+    area ? `Area: ${area}` : null,
+    description ? `Issue: ${description}` : null,
+    url ? `Details: ${url}` : 'Please review the details in Procore and follow up.',
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+/**
  * Handle the Assign dropdown (normal RFI cards): mark the card assigned to the
- * chosen worker and text that worker. Best-effort outbound, like every leg.
+ * chosen worker and text that worker with the issue details. Best-effort
+ * outbound, like every leg.
  * @param {import('@slack/bolt').AllMiddlewareArgs & import('@slack/bolt').SlackActionMiddlewareArgs} args
  * @returns {Promise<void>}
  */
@@ -172,12 +229,8 @@ export async function handleIssueAssignSelect({ ack, body, client, logger }) {
     const action = /** @type {any} */ (body).actions?.[0];
     const { phone, name, rfiId } = parseAssignValue(action?.selected_option?.value);
     await updateCard(client, body, `:wrench: *Assigned to ${name}* by ${actor(body)}`, `Issue assigned to ${name}`);
-    const detail = rfiId ? ` — RFI #${rfiId}` : '';
-    await textPhone(
-      phone,
-      `You've been assigned a new field issue${detail}. Please review the details in Procore and follow up.`,
-      logger,
-    );
+    const message = buildAssignmentMessage(/** @type {any} */ (body).message?.blocks, rfiId);
+    await textPhone(phone, message, logger);
   } catch (e) {
     logger.error(`Failed to handle issue assign-select: ${e}`);
   }

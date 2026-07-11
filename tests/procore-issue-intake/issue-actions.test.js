@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   applyIssueStatus,
+  buildAssignmentMessage,
   handleIssueAssignSelect,
   handleIssueResolved,
 } from '../../features/procore-issue-intake/issue-actions.js';
@@ -80,6 +81,41 @@ describe('handleIssueResolved', () => {
     );
     assert.match(JSON.stringify(updates[0].blocks), /Resolved/);
     assert.match(JSON.stringify(updates[0].blocks), /U999/);
+  });
+});
+
+describe('buildAssignmentMessage', () => {
+  const cardWithDetails = [
+    { type: 'header', text: { type: 'plain_text', text: ':construction: New RFI' } },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: '*Area:*\nLevel 3, west stairwell' },
+        { type: 'mrkdwn', text: '*Site:*\nPark Place' },
+      ],
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: '*Description:*\nHandrail bracket spacing is wrong' } },
+    {
+      type: 'context',
+      elements: [
+        { type: 'mrkdwn', text: ':page_facing_up: Procore <https://sandbox.procore.com/x/104063|RFI #104063>' },
+      ],
+    },
+  ];
+
+  it('includes rfi number, site, area, description, and the Procore link', () => {
+    const msg = buildAssignmentMessage(cardWithDetails, 104063);
+    assert.match(msg, /#104063/);
+    assert.match(msg, /Park Place/);
+    assert.match(msg, /Area: Level 3, west stairwell/);
+    assert.match(msg, /Issue: Handrail bracket spacing is wrong/);
+    assert.match(msg, /Details: https:\/\/sandbox\.procore\.com\/x\/104063/);
+  });
+
+  it('degrades gracefully when the card has no details', () => {
+    const msg = buildAssignmentMessage([], null);
+    assert.match(msg, /assigned a new RFI/);
+    assert.match(msg, /review the details in Procore/);
   });
 });
 
