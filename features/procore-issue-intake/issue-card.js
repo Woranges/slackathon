@@ -31,7 +31,9 @@ export const ISSUE_RESOLVED_ACTION = 'issue_resolved';
  * @returns {import('@slack/types').KnownBlock[]}
  */
 export function buildIssueCardBlocks(record, rfi = null) {
-  const value = record.reporter.phone;
+  // Buttons carry the reporter phone + the RFI id so the action handlers can text
+  // the reporter and post a resolution reply to the RFI without a lookup.
+  const value = JSON.stringify({ phone: record.reporter.phone, rfiId: rfi?.id ?? null });
   const isSafety = record.reportType === 'safety';
   // Render the timestamp in each viewer's own locale/timezone via Slack's date
   // token, falling back to the raw ISO string in clients that can't format it.

@@ -32,13 +32,14 @@ function hasPhotoHint(blocks) {
 }
 
 describe('buildIssueCardBlocks', () => {
-  it('includes the three action buttons carrying the reporter phone', () => {
-    const actions = actionsBlock(buildIssueCardBlocks(record));
+  it('includes the three action buttons carrying the reporter phone + RFI id', () => {
+    const actions = actionsBlock(buildIssueCardBlocks(record, { id: 42, url: 'https://x/42' }));
     assert.ok(actions, 'expected an actions block');
-    const byAction = Object.fromEntries(actions.elements.map((e) => [e.action_id, e.value]));
-    assert.strictEqual(byAction[ISSUE_ASSIGN_ACTION], '+15555550101');
-    assert.strictEqual(byAction[ISSUE_ESCALATE_ACTION], '+15555550101');
-    assert.strictEqual(byAction[ISSUE_RESOLVED_ACTION], '+15555550101');
+    const byAction = Object.fromEntries(actions.elements.map((e) => [e.action_id, JSON.parse(e.value)]));
+    for (const action of [ISSUE_ASSIGN_ACTION, ISSUE_ESCALATE_ACTION, ISSUE_RESOLVED_ACTION]) {
+      assert.strictEqual(byAction[action].phone, '+15555550101');
+      assert.strictEqual(byAction[action].rfiId, 42);
+    }
   });
 
   it('never renders an inline image block (photos go in the thread)', () => {

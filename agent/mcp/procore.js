@@ -288,3 +288,30 @@ export async function createProcoreRfi(record) {
   const json = /** @type {{ id: number, link?: string, html_url?: string }} */ (await res.json());
   return { id: json.id, url: json.link ?? json.html_url ?? null };
 }
+
+/**
+ * Post a reply on an RFI's question thread — used to record a resolution note
+ * from the Slack card. (Procore won't hard-close an RFI via a simple status
+ * PATCH — that needs the full response/close workflow — so a reply is the
+ * reliable, visible mutation.) Throws on failure; callers treat it best-effort.
+ * @param {number} rfiId
+ * @param {string} body
+ * @returns {Promise<void>}
+ */
+export async function addRfiReply(rfiId, body) {
+  if (!isProcoreConfigured()) return;
+  const e = procoreEnv();
+  const token = await getAccessToken();
+  const res = await fetch(`${e.baseUrl}/rest/v1.0/projects/${e.projectId}/rfis/${rfiId}/replies`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Procore-Company-Id': String(e.companyId),
+    },
+    body: JSON.stringify({ reply: { body } }),
+  });
+  if (!res.ok) {
+    throw new Error(`Procore RFI reply failed: ${res.status} ${await res.text()}`);
+  }
+}

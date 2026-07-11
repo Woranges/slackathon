@@ -2,12 +2,31 @@
 //
 // Handlers for the management-card buttons (Assign / Escalate / Resolved). Each
 // updates the card in place — removes the buttons and appends a status line
-// showing who acted — and texts the reporter back. The SMS goes through the
-// shared lib/twilio.js#sendSms, which is currently a stub that throws, so the
-// call is wrapped and its failure logged (not surfaced) until Twilio is wired.
+// showing who acted — and texts the reporter back via lib/twilio.js#sendSms.
+// Resolved additionally posts a resolution reply on the Procore RFI. Every
+// outbound side effect is best-effort (wrapped + logged) so a Twilio/Procore
+// hiccup never breaks the button interaction.
 
+import { addRfiReply } from '../../agent/mcp/procore.js';
 import { sendSms } from '../../lib/twilio.js';
 import { ISSUE_ASSIGN_ACTION, ISSUE_ESCALATE_ACTION, ISSUE_RESOLVED_ACTION } from './issue-card.js';
+
+/**
+ * Parse the button `value`, which carries the reporter phone + RFI id as JSON.
+ * Tolerates a bare phone string (older cards) so old buttons don't break.
+ * @param {string | undefined} raw
+ * @returns {{ phone: string | undefined, rfiId: number | null }}
+ */
+function parseButtonValue(raw) {
+  if (!raw) return { phone: undefined, rfiId: null };
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object') return { phone: v.phone, rfiId: v.rfiId ?? null };
+  } catch {
+    // Not JSON — an older card whose value was the bare phone.
+  }
+  return { phone: raw, rfiId: null };
+}
 
 /**
  * Return a copy of the card blocks with the action buttons removed and a status
@@ -66,12 +85,30 @@ async function textReporter(phone, message, logger) {
 }
 
 /**
- * Build a button handler that updates the card and texts the reporter.
+ * Post a resolution note on the RFI; swallow (log) failures so a Procore
+ * outage doesn't break the button interaction.
+ * @param {number | null} rfiId
+ * @param {string} note
+ * @param {any} logger
+ */
+async function noteOnRfi(rfiId, note, logger) {
+  if (!rfiId) return;
+  try {
+    await addRfiReply(rfiId, note);
+  } catch (e) {
+    logger?.info?.(`RFI reply not posted (#${rfiId}): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Build a button handler that updates the card and texts the reporter, and
+ * optionally posts a note on the Procore RFI.
  * @param {string} label - e.g. "Assigned".
  * @param {string} emoji - Slack emoji shortcode prefix for the status line.
  * @param {string} smsMessage - What the reporter is texted.
+ * @param {boolean} [postsRfiNote] - When true and the card carries an RFI id, post a reply on the RFI.
  */
-function makeHandler(label, emoji, smsMessage) {
+function makeHandler(label, emoji, smsMessage, postsRfiNote = false) {
   /**
    * @param {import('@slack/bolt').AllMiddlewareArgs & import('@slack/bolt').SlackActionMiddlewareArgs<import('@slack/bolt').BlockButtonAction>} args
    * @returns {Promise<void>}
@@ -79,9 +116,13 @@ function makeHandler(label, emoji, smsMessage) {
   return async ({ ack, body, client, logger }) => {
     await ack();
     try {
-      const phone = body.actions[0]?.value;
+      const { phone, rfiId } = parseButtonValue(body.actions[0]?.value);
       await updateCard(client, body, `${emoji} *${label}* by ${actor(body)}`, `Issue ${label.toLowerCase()}`);
       await textReporter(phone, smsMessage, logger);
+      if (postsRfiNote) {
+        const today = new Date().toISOString().slice(0, 10);
+        await noteOnRfi(rfiId, `Marked ${label.toLowerCase()} via Slack on ${today}.`, logger);
+      }
     } catch (e) {
       logger.error(`Failed to handle issue ${label.toLowerCase()}: ${e}`);
     }
@@ -102,6 +143,7 @@ export const handleIssueResolved = makeHandler(
   'Resolved',
   ':ballot_box_with_check:',
   'Your reported issue has been marked resolved. Thank you.',
+  true,
 );
 
 export { ISSUE_ASSIGN_ACTION, ISSUE_ESCALATE_ACTION, ISSUE_RESOLVED_ACTION };
