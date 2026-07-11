@@ -290,15 +290,18 @@ export async function createProcoreRfi(record) {
 }
 
 /**
- * Post a reply on an RFI's question thread — used to record a resolution note
- * from the Slack card. (Procore won't hard-close an RFI via a simple status
- * PATCH — that needs the full response/close workflow — so a reply is the
- * reliable, visible mutation.) Throws on failure; callers treat it best-effort.
+ * Post a reply on an RFI's question thread — used to record a resolution from the
+ * Slack card. Pass `official: true` to mark it the official response (the closest
+ * Procore lets us get to "resolved": the API can't flip an RFI's status to closed
+ * with a service-account token — that needs the in-app close workflow — but an
+ * official response is a clear, recorded resolution). Throws on failure; callers
+ * treat it best-effort.
  * @param {number} rfiId
  * @param {string} body
+ * @param {{ official?: boolean }} [opts]
  * @returns {Promise<void>}
  */
-export async function addRfiReply(rfiId, body) {
+export async function addRfiReply(rfiId, body, opts = {}) {
   if (!isProcoreConfigured()) return;
   const e = procoreEnv();
   const token = await getAccessToken();
@@ -309,7 +312,7 @@ export async function addRfiReply(rfiId, body) {
       'Content-Type': 'application/json',
       'Procore-Company-Id': String(e.companyId),
     },
-    body: JSON.stringify({ reply: { body } }),
+    body: JSON.stringify({ reply: { body, official: Boolean(opts.official) } }),
   });
   if (!res.ok) {
     throw new Error(`Procore RFI reply failed: ${res.status} ${await res.text()}`);

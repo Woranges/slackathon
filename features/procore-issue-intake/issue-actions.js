@@ -94,7 +94,9 @@ async function textReporter(phone, message, logger) {
 async function noteOnRfi(rfiId, note, logger) {
   if (!rfiId) return;
   try {
-    await addRfiReply(rfiId, note);
+    // Mark it the official response — the recorded "resolution" on the RFI, since
+    // Procore's API won't flip the status to closed (see addRfiReply).
+    await addRfiReply(rfiId, note, { official: true });
   } catch (e) {
     logger?.info?.(`RFI reply not posted (#${rfiId}): ${e instanceof Error ? e.message : String(e)}`);
   }
