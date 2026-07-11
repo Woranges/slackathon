@@ -33,12 +33,15 @@ export function createSearchWorkspaceTool(deps) {
       },
     },
     handler: async ({ query }) => {
-      if (!deps?.userToken) {
-        return { error: 'Cannot search workspace history: no user token available for this session.' };
+      // A user token (xoxp-) is required for RTS. Prefer a per-session token if
+      // the caller wired one; otherwise fall back to SLACK_USER_TOKEN.
+      const token = deps?.userToken || process.env.SLACK_USER_TOKEN;
+      if (!token) {
+        return { error: 'Cannot search workspace history: no Slack user token available (set SLACK_USER_TOKEN).' };
       }
 
       try {
-        const results = await searchWorkspace(/** @type {string} */ (query), deps.userToken);
+        const results = await searchWorkspace(/** @type {string} */ (query), token);
         if (results.length === 0) {
           return { output: `No results found for "${query}".` };
         }
@@ -46,7 +49,7 @@ export function createSearchWorkspaceTool(deps) {
         return { output: formatted };
       } catch (e) {
         const err = /** @type {any} */ (e);
-        return { error: `TODO: RTS search not yet wired up (${err.message})` };
+        return { error: `RTS search failed: ${err.message}` };
       }
     },
   };

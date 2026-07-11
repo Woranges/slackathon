@@ -32,13 +32,14 @@ function hasPhotoHint(blocks) {
 }
 
 describe('buildIssueCardBlocks', () => {
-  it('includes the three action buttons carrying the reporter phone', () => {
-    const actions = actionsBlock(buildIssueCardBlocks(record));
+  it('includes the three action buttons carrying the reporter phone + RFI id', () => {
+    const actions = actionsBlock(buildIssueCardBlocks(record, { id: 42, url: 'https://x/42' }));
     assert.ok(actions, 'expected an actions block');
-    const byAction = Object.fromEntries(actions.elements.map((e) => [e.action_id, e.value]));
-    assert.strictEqual(byAction[ISSUE_ASSIGN_ACTION], '+15555550101');
-    assert.strictEqual(byAction[ISSUE_ESCALATE_ACTION], '+15555550101');
-    assert.strictEqual(byAction[ISSUE_RESOLVED_ACTION], '+15555550101');
+    const byAction = Object.fromEntries(actions.elements.map((e) => [e.action_id, JSON.parse(e.value)]));
+    for (const action of [ISSUE_ASSIGN_ACTION, ISSUE_ESCALATE_ACTION, ISSUE_RESOLVED_ACTION]) {
+      assert.strictEqual(byAction[action].phone, '+15555550101');
+      assert.strictEqual(byAction[action].rfiId, 42);
+    }
   });
 
   it('never renders an inline image block (photos go in the thread)', () => {
@@ -109,7 +110,11 @@ describe('postIssueCard', () => {
     assert.strictEqual(calls.posts.length, 1);
     assert.strictEqual(calls.posts[0].channel, 'C123MGMT');
     assert.ok(Array.isArray(calls.posts[0].blocks));
-    assert.match(calls.posts[0].text, /New site issue reported/);
+    // Fallback text is a self-contained summary (also the only thing RTS indexes):
+    // type + area + description all present.
+    assert.match(calls.posts[0].text, /New RFI/);
+    assert.match(calls.posts[0].text, new RegExp(record.area.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(calls.posts[0].text, new RegExp(record.description));
     // No photo on this record → no thread upload.
     assert.strictEqual(calls.uploads.length, 0);
   });

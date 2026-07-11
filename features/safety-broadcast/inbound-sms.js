@@ -46,8 +46,11 @@ never respond in plain text.
 
 - "acknowledgment": the worker is confirming they received/understood a safety alert \
   (e.g. "ok", "got it", "yes", "roger", "👍", "on it").
-- "issue_report": the worker is reporting a new problem, not acknowledging anything.
-- "other": anything else.`;
+- "issue_report": the worker is starting a new report of ANY kind that should be logged — \
+  a site problem, a safety hazard, OR a field question / RFI needing an answer from the \
+  office (e.g. "there's a leak on 4", "I need clarification on the door schedule", \
+  "who approved this detail?"). Anything that isn't just an acknowledgment or small talk.
+- "other": greetings, small talk, or noise that doesn't start a report and isn't an ack.`;
 
 /**
  * @param {(intent: 'acknowledgment' | 'issue_report' | 'other') => void} onClassified
@@ -148,12 +151,10 @@ function escapeXml(s) {
  * @returns {Promise<void>}
  */
 async function runIssueIntake(from, body, photoUrl, client, res) {
-  // A photo-only MMS/WhatsApp message has an empty Body; nudge the model so it
-  // knows a photo arrived (and files) rather than seeing a blank turn. Mirrors
-  // the Slack DM path in listeners/events/message.js.
-  const text = body || (photoUrl ? '[photo attached]' : body);
-  const { reply, done, record } = await advanceIssueIntake(from, SMS_THREAD, text, { phone: from, photoUrl });
-  if (done && record) await postIssueCard(client, record);
+  // The intake engine tracks the photo in code, so a photo-only message (empty
+  // Body) just passes empty text and gets latched via photoUrl — no hint needed.
+  const { reply, done, record, rfi } = await advanceIssueIntake(from, SMS_THREAD, body, { phone: from, photoUrl });
+  if (done && record) await postIssueCard(client, record, rfi);
   res
     .status(200)
     .type('text/xml')

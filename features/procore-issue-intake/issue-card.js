@@ -27,10 +27,14 @@ export const ISSUE_RESOLVED_ACTION = 'issue_resolved';
 
 /**
  * @param {IssueRecord} record
+ * @param {{ id: number, url: string | null } | null} [rfi] - The created Procore RFI, if any.
  * @returns {import('@slack/types').KnownBlock[]}
  */
-export function buildIssueCardBlocks(record) {
-  const value = record.reporter.phone;
+export function buildIssueCardBlocks(record, rfi = null) {
+  // Buttons carry the reporter phone + the RFI id so the action handlers can text
+  // the reporter and post a resolution reply to the RFI without a lookup.
+  const value = JSON.stringify({ phone: record.reporter.phone, rfiId: rfi?.id ?? null });
+  const isSafety = record.reportType === 'safety';
   // Render the timestamp in each viewer's own locale/timezone via Slack's date
   // token, falling back to the raw ISO string in clients that can't format it.
   // `{date_long}` gives weekday + full date (e.g. "Wednesday, July 8th, 2026")
@@ -38,26 +42,38 @@ export function buildIssueCardBlocks(record) {
   const reportedAtUnix = Math.floor(new Date(record.timestamp).getTime() / 1000);
   const reportedAt = `<!date^${reportedAtUnix}^{date_long} at {time}|${record.timestamp}>`;
 
+  /** @type {{ type: 'mrkdwn', text: string }[]} */
+  const fields = [
+    { type: 'mrkdwn', text: `*Area:*\n${record.area}` },
+    { type: 'mrkdwn', text: `*Reported by:*\n${record.reporter.name}` },
+    { type: 'mrkdwn', text: `*Site:*\n${record.siteName ?? record.siteId ?? '—'}` },
+    { type: 'mrkdwn', text: `*Reported at:*\n${reportedAt}` },
+  ];
+  if (isSafety) fields.push({ type: 'mrkdwn', text: `*Severity:*\n${record.severity ?? '—'}` });
+  else if (record.specReference) fields.push({ type: 'mrkdwn', text: `*Reference:*\n${record.specReference}` });
+
   /** @type {import('@slack/types').KnownBlock[]} */
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: ':construction: New site issue', emoji: true },
+      text: {
+        type: 'plain_text',
+        text: isSafety ? ':rotating_light: Safety report' : ':construction: New RFI',
+        emoji: true,
+      },
     },
-    {
-      type: 'section',
-      fields: [
-        { type: 'mrkdwn', text: `*Area:*\n${record.area}` },
-        { type: 'mrkdwn', text: `*Reported by:*\n${record.reporter.name}` },
-        { type: 'mrkdwn', text: `*Site:*\n${record.siteId ?? '—'}` },
-        { type: 'mrkdwn', text: `*Reported at:*\n${reportedAt}` },
-      ],
-    },
+    { type: 'section', fields },
     {
       type: 'section',
       text: { type: 'mrkdwn', text: `*Description:*\n${record.description}` },
     },
   ];
+
+  // Link the Procore RFI if it was created.
+  if (rfi) {
+    const link = rfi.url ? `<${rfi.url}|RFI #${rfi.id}>` : `RFI #${rfi.id}`;
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `:page_facing_up: Procore ${link}` }] });
+  }
 
   // Photo lives in the card's thread (see file header); surface a hint so it's
   // easy to find.
@@ -103,15 +119,21 @@ export function buildIssueCardBlocks(record) {
  * flow still completes without a channel configured.
  * @param {import('@slack/web-api').WebClient} client
  * @param {IssueRecord} record
+ * @param {{ id: number, url: string | null } | null} [rfi] - The created Procore RFI, if any.
  * @returns {Promise<{ posted: boolean, channel?: string, ts?: string, reason?: string }>}
  */
-export async function postIssueCard(client, record) {
+export async function postIssueCard(client, record, rfi = null) {
   const channel = process.env.MANAGEMENT_CHANNEL_ID;
   if (!channel) return { posted: false, reason: 'MANAGEMENT_CHANNEL_ID not set' };
 
-  // Fallback text shown in notifications / clients that can't render blocks.
-  const text = `New site issue reported: ${record.area}`;
-  const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record) });
+  // Fallback text shown in notifications / clients that can't render blocks — and,
+  // just as importantly, the ONLY text the Real-Time Search API can index for this
+  // card (the structured fields live in blocks, which RTS doesn't read). So make it
+  // a self-contained summary: type, site, area, and description all searchable.
+  const label = record.reportType === 'safety' ? 'Safety report' : 'RFI';
+  const site = record.siteName ?? record.siteId;
+  const text = `New ${label}${site ? ` at ${site}` : ''}: ${record.area}. ${record.description}`;
+  const res = await client.chat.postMessage({ channel, text, blocks: buildIssueCardBlocks(record, rfi) });
   const ts = /** @type {string} */ (res.ts);
 
   // Attach the photo as a reply in the card's thread (best-effort; see
