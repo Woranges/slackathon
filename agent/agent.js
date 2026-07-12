@@ -56,6 +56,13 @@ called as tools here.`;
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
 
+// The conversational agent decides when to call tools (search_workspace_history,
+// check_for_contradictions). flash-lite is unreliable at that, so this path runs
+// on a stronger model. Only the DM/mention agent uses it — the high-volume intake
+// and translation calls stay on the cheap default — so the smaller free quota is
+// fine. Override with AGENT_MODEL if needed.
+const AGENT_MODEL = process.env.AGENT_MODEL ?? 'gemini-3.5-flash';
+
 /**
  * @typedef {Object} AgentDeps
  * @property {import('@slack/web-api').WebClient} client
@@ -88,5 +95,5 @@ export async function runAgent(text, history = [], deps = undefined) {
     mcpServers.push(procoreMcpConfig);
   }
 
-  return runLlmTurn({ systemPrompt: SYSTEM_PROMPT, history, text, tools, mcpServers });
+  return runLlmTurn({ systemPrompt: SYSTEM_PROMPT, history, text, tools, mcpServers, model: AGENT_MODEL });
 }
