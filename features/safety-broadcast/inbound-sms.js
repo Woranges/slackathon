@@ -11,13 +11,7 @@
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
 // match would miss most of them.
 
-import {
-  getAckStatus,
-  getLatestBroadcastForSite,
-  getWorkerByPhone,
-  recordBroadcastAck,
-  siteLabel,
-} from '../../lib/db.js';
+import { getAckStatus, getLatestBroadcastForPhone, recordBroadcastAck, siteLabel } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { postIssueCard } from '../procore-issue-intake/issue-card.js';
 import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
@@ -101,6 +95,43 @@ async function classifyReply(text) {
 }
 
 /**
+ * Turn a worker's acknowledgment reply into a recorded ack and a live scoreboard
+ * update. Finds the most recent broadcast for the worker's site, records the ack
+ * against it, and rewrites the "X/Y acknowledged" Slack message with the new
+ * count. Returns the matched broadcast, or null if the phone maps to no known
+ * worker or open broadcast.
+ * @param {string | undefined} from - The replying worker's phone (E.164).
+ * @param {import('@slack/web-api').WebClient} client
+ * @returns {Promise<import('../../lib/db.js').Broadcast | null>}
+ */
+export async function recordAckAndUpdateScoreboard(from, client) {
+  if (!from) return null;
+
+  const broadcast = await getLatestBroadcastForPhone(from);
+  if (!broadcast) return null;
+
+  await recordBroadcastAck(broadcast.id, from);
+
+  // Only touch Slack if this broadcast actually has a posted scoreboard message
+  // (it won't in HTTP-only edge cases where the original postMessage failed).
+  if (broadcast.channel && broadcast.messageTs) {
+    const { acknowledged, total } = await getAckStatus(broadcast.id);
+    await client.chat.update({
+      channel: broadcast.channel,
+      ts: broadcast.messageTs,
+      text: formatBroadcastStatus({
+        site: siteLabel(broadcast.siteId) ?? broadcast.siteId,
+        message: broadcast.message,
+        acknowledged,
+        total,
+      }),
+    });
+  }
+
+  return broadcast;
+}
+
+/**
  * Escape text for inclusion in a TwiML XML body.
  * @param {string} s
  * @returns {string}
@@ -163,35 +194,14 @@ export async function handleTwilioInboundSms(req, res, client) {
     const intent = await classifyReply(body);
 
     if (intent === 'acknowledgment') {
-      // Route the ack to this worker's most recent site broadcast (the SMS itself
-      // carries no broadcast id), then bump the live "X/Y acknowledged" scoreboard.
-      const worker = from ? await getWorkerByPhone(from) : null;
-      const broadcast = worker ? await getLatestBroadcastForSite(worker.siteId) : null;
-      if (!broadcast) {
-        console.log(
-          `[ack] "${body}" from ${from}: no active broadcast for site ${worker?.siteId ?? '(unknown worker)'}`,
-        );
-      }
-      if (broadcast && from) {
-        await recordBroadcastAck(broadcast.id, from);
+      // Record the ack against the worker's latest broadcast and bump the live
+      // "X/Y acknowledged" scoreboard. Log the outcome for demo visibility.
+      const broadcast = await recordAckAndUpdateScoreboard(from, client);
+      if (broadcast) {
         const { acknowledged, total } = await getAckStatus(broadcast.id);
         console.log(`[ack] ${from} acknowledged broadcast ${broadcast.id} — now ${acknowledged}/${total}`);
-        if (broadcast.channel && broadcast.messageTs) {
-          try {
-            await client.chat.update({
-              channel: broadcast.channel,
-              ts: broadcast.messageTs,
-              text: formatBroadcastStatus({
-                site: siteLabel(broadcast.siteId) ?? broadcast.siteId,
-                message: broadcast.message,
-                acknowledged,
-                total,
-              }),
-            });
-          } catch (e) {
-            console.error(`Failed to update ack scoreboard: ${e}`);
-          }
-        }
+      } else {
+        console.log(`[ack] "${body}" from ${from}: no active broadcast matched`);
       }
     } else if (intent === 'issue_report' && from) {
       await runIssueIntake(from, body, photoUrl, client, res);

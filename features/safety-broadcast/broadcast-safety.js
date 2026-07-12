@@ -7,10 +7,10 @@
 // avoid 10-2, downtown site"), handling that variation better than a fixed
 // regex would.
 
-import { createBroadcast, getWorkersBySite, setBroadcastMessage, siteLabel } from '../../lib/db.js';
+import { createBroadcast, getWorkersBySite, hasAcked, setBroadcastMessage, siteLabel } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
-import { sendSms } from '../../lib/twilio.js';
+import { placeEscalationCall, sendSms } from '../../lib/twilio.js';
 
 const PARSE_SYSTEM_PROMPT = `\
 Extract the safety broadcast message and site identifier from a construction manager's \
@@ -69,12 +69,59 @@ export function formatBroadcastStatus({ site, message, acknowledged, total }) {
 }
 
 /**
- * Send a safety message to every worker at a site (translated per worker) and
- * post the live acknowledgment scoreboard to Slack, registering it so inbound
- * acks (features/safety-broadcast/inbound-sms.js) can update the count. Shared by
- * the /broadcast-safety slash command and the issue card's Escalate button, so a
- * safety escalation reuses the exact same fan-out + scoreboard. Best-effort per
- * send: one bad number never aborts the rest of a safety alert.
+ * Voice-call every worker who has NOT acknowledged a broadcast. Runs after the
+ * escalation window elapses. Each call is wrapped so one failure (a bad number,
+ * or Twilio being unconfigured) doesn't stop the rest — an escalation should
+ * reach as many non-responders as possible.
+ * @param {import('../../lib/db.js').Broadcast} broadcast
+ * @param {import('../../lib/db.js').Worker[]} workers - Workers the broadcast was sent to.
+ * @param {{ placeCall?: (to: string, message: string) => Promise<void> }} [deps]
+ *   placeCall is injectable so escalation can be tested without hitting Twilio.
+ * @returns {Promise<number>} How many escalation calls succeeded.
+ */
+export async function escalateUnacknowledged(broadcast, workers, { placeCall = placeEscalationCall } = {}) {
+  let called = 0;
+  for (const worker of workers) {
+    if (await hasAcked(broadcast.id, worker.phone)) continue;
+    try {
+      await placeCall(worker.phone, broadcast.message);
+      called += 1;
+    } catch (error) {
+      console.error(`[broadcast-safety] escalation call to ${worker.phone} failed:`, error);
+    }
+  }
+  return called;
+}
+
+/**
+ * After a broadcast, schedule a voice-call sweep of anyone who still hasn't
+ * acknowledged within the window. Extracted so BOTH callers of broadcastToSite
+ * (the slash command and the Escalate button) get escalation. The delay is read
+ * at call time so it can be tuned per run (ESCALATION_DELAY_MS=30000 to see it
+ * quickly in a demo); a negative value disables escalation. .unref() keeps the
+ * pending timer from holding the process open on its own.
+ * @param {import('../../lib/db.js').Broadcast} broadcast
+ * @param {import('../../lib/db.js').Worker[]} workers
+ */
+function scheduleEscalationSweep(broadcast, workers) {
+  const delayMs = Number(process.env.ESCALATION_DELAY_MS ?? 15 * 60 * 1000);
+  if (Number.isFinite(delayMs) && delayMs >= 0) {
+    setTimeout(() => {
+      escalateUnacknowledged(broadcast, workers).catch((error) =>
+        console.error('[broadcast-safety] escalation sweep failed:', error),
+      );
+    }, delayMs).unref();
+  }
+}
+
+/**
+ * Send a safety message to every worker at a site (translated per worker), post
+ * the live acknowledgment scoreboard to Slack, register it so inbound acks
+ * (features/safety-broadcast/inbound-sms.js) can update the count, and schedule
+ * the escalation sweep. Shared by the /broadcast-safety slash command and the
+ * issue card's Escalate button, so a safety escalation reuses the exact same
+ * fan-out + scoreboard + follow-up. Best-effort per send: one bad number never
+ * aborts the rest of a safety alert.
  * @param {{ site: string, message: string, client: any, channel: string }} params
  *   `site` is the lookup id (getWorkersBySite); the scoreboard shows its friendly name.
  * @returns {Promise<{ sent: number, total: number, broadcastId: string | null }>}
@@ -109,6 +156,9 @@ export async function broadcastToSite({ site, message, client, channel }) {
   if (posted.ts) {
     await setBroadcastMessage(broadcast.id, channel, posted.ts);
   }
+
+  // Chase non-responders by voice after the window (both callers get this).
+  scheduleEscalationSweep(broadcast, workers);
 
   return { sent, total: workers.length, broadcastId: broadcast.id };
 }
