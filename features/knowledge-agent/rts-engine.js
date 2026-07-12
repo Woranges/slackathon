@@ -40,7 +40,9 @@ export async function searchWorkspace(query, userToken) {
     body: JSON.stringify({
       query,
       content_types: ['messages', 'files'],
-      channel_types: ['public_channel', 'private_channel', 'im', 'mpim'],
+      // Search shared site channels, not DMs — a manager asking "find the RFI"
+      // wants the posted cards in #site-issues, not incidental DM chatter.
+      channel_types: ['public_channel', 'private_channel'],
       limit: 10,
     }),
   });
@@ -50,9 +52,13 @@ export async function searchWorkspace(query, userToken) {
     throw new Error(`RTS search failed: ${data.error ?? res.status}`);
   }
 
+  // Slack returns empty `content` for block-only bot messages (our issue cards),
+  // even though it indexed and matched their text. Fall back to a channel label so
+  // the result is still usable — results are ranked by relevance, so the top match
+  // for e.g. "door schedule" is the right card even without a text preview.
   /** @type {SearchResult[]} */
   const messages = (data.results?.messages ?? []).map((/** @type {any} */ m) => ({
-    text: m.content ?? '',
+    text: (m.content ?? '').trim() || `report card in #${m.channel_name ?? 'a channel'}`,
     permalink: m.permalink ?? '',
     user: m.author_name,
     ts: m.message_ts,
