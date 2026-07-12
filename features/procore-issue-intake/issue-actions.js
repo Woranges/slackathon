@@ -10,6 +10,8 @@
 // Twilio/Procore hiccup never breaks the interaction.
 
 import { addRfiReply } from '../../agent/mcp/procore.js';
+import { getWorkerByPhone } from '../../lib/db.js';
+import { translateText } from '../../lib/translate.js';
 import { sendSms } from '../../lib/twilio.js';
 // Escalate reuses the safety-broadcast feature's fan-out (its owner's code,
 // exported for exactly this): escalating a safety card sends the same site-wide
@@ -233,7 +235,12 @@ export async function handleIssueAssignSelect({ ack, body, client, logger }) {
     const action = /** @type {any} */ (body).actions?.[0];
     const { phone, name, rfiId } = parseAssignValue(action?.selected_option?.value);
     await updateCard(client, body, `:wrench: *Assigned to ${name}* by ${actor(body)}`, `Issue assigned to ${name}`);
-    const message = buildAssignmentMessage(/** @type {any} */ (body).message?.blocks, rfiId);
+    let message = buildAssignmentMessage(/** @type {any} */ (body).message?.blocks, rfiId);
+    // Send in the assignee's own language (learned from their reports); English
+    // workers skip translation. Best-effort — falls back to English on failure.
+    const assignee = phone ? await getWorkerByPhone(phone) : null;
+    const lang = assignee?.preferredLanguage;
+    if (lang && !lang.toLowerCase().startsWith('en')) message = await translateText(message, lang);
     await textPhone(phone, message, logger);
   } catch (e) {
     logger.error(`Failed to handle issue assign-select: ${e}`);

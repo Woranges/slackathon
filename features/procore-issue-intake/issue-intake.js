@@ -23,7 +23,7 @@
 // this degrades to English-only if the model/translation call fails.
 
 import { createProcoreRfi, isProcoreConfigured } from '../../agent/mcp/procore.js';
-import { getWorkerByPhone, getWorkerBySlackUserId } from '../../lib/db.js';
+import { getWorkerByPhone, getWorkerBySlackUserId, setWorkerLanguage } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
 import { buildIssueRecord } from './issue-record.js';
@@ -237,6 +237,11 @@ async function fileReport(state, context) {
   const worker =
     (context.phone ? await getWorkerByPhone(context.phone) : null) ??
     (context.slackUserId ? await getWorkerBySlackUserId(context.slackUserId) : null);
+
+  // Remember the language this worker reported in, so later outbound messages to
+  // them (safety broadcasts, assignment texts) go out in it — not their stale
+  // seed default. Keyed by phone (the SMS/WhatsApp path); the DM path has none.
+  if (context.phone && state.language) await setWorkerLanguage(context.phone, state.language);
 
   // Normalize the report to English for the office (Slack card + Procore RFI),
   // even though the conversation happened in the worker's language. Only translate
