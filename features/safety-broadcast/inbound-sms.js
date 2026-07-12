@@ -11,7 +11,13 @@
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
 // match would miss most of them.
 
-import { getAckStatus, getLatestBroadcastForPhone, recordBroadcastAck, siteLabel } from '../../lib/db.js';
+import {
+  getAckStatus,
+  getBroadcastAudit,
+  getLatestBroadcastForPhone,
+  recordBroadcastAck,
+  siteLabel,
+} from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { postIssueCard } from '../procore-issue-intake/issue-card.js';
 import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
@@ -115,15 +121,13 @@ export async function recordAckAndUpdateScoreboard(from, client) {
   // Only touch Slack if this broadcast actually has a posted scoreboard message
   // (it won't in HTTP-only edge cases where the original postMessage failed).
   if (broadcast.channel && broadcast.messageTs) {
-    const { acknowledged, total } = await getAckStatus(broadcast.id);
     await client.chat.update({
       channel: broadcast.channel,
       ts: broadcast.messageTs,
       text: formatBroadcastStatus({
         site: siteLabel(broadcast.siteId) ?? broadcast.siteId,
         message: broadcast.message,
-        acknowledged,
-        total,
+        rows: await getBroadcastAudit(broadcast.id),
       }),
     });
   }

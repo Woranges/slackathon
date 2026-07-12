@@ -5,12 +5,14 @@ import {
   createBroadcast,
   getAckStatus,
   getBroadcast,
+  getBroadcastAudit,
   getLatestBroadcastForPhone,
   getWorkerByPhone,
   getWorkerBySlackUserId,
   getWorkersBySite,
   hasAcked,
   recordBroadcastAck,
+  recordEscalation,
   setBroadcastMessage,
   siteLabel,
 } from '../../lib/db.js';
@@ -158,5 +160,68 @@ describe('hasAcked', () => {
     const broadcast = await createBroadcast('site-1', 'Alert');
     await recordBroadcastAck(broadcast.id, '+15555550101');
     assert.strictEqual(await hasAcked(broadcast.id, '+15555550102'), false);
+  });
+});
+
+describe('getBroadcastAudit', () => {
+  it('returns a row for every worker the broadcast was sent to', async () => {
+    const broadcast = await createBroadcast('site-1', 'Evacuate zone 3');
+    const audit = await getBroadcastAudit(broadcast.id);
+
+    // site-1 has three seeded workers.
+    assert.strictEqual(audit.length, 3);
+    for (const row of audit) {
+      assert.ok(row.phone, 'every row carries the worker phone');
+      assert.ok(row.name, 'every row carries the worker name');
+    }
+  });
+
+  it('timestamps an acknowledgment so the record shows WHEN it happened', async () => {
+    const broadcast = await createBroadcast('site-1', 'Alert');
+    const before = Date.now();
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+
+    const row = (await getBroadcastAudit(broadcast.id)).find((r) => r.phone === '+15555550101');
+    assert.ok(row?.ackedAt, 'an acknowledged worker has an ackedAt timestamp');
+    // A real ISO 8601 instant, at or after the moment we recorded it.
+    const acked = new Date(/** @type {string} */ (row.ackedAt)).getTime();
+    assert.ok(Number.isFinite(acked), 'ackedAt parses as a date');
+    assert.ok(acked >= before - 1000 && acked <= Date.now() + 1000, 'ackedAt is the time of the ack');
+  });
+
+  it('leaves ackedAt null for a worker who never acknowledged', async () => {
+    const broadcast = await createBroadcast('site-1', 'Alert');
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+
+    const row = (await getBroadcastAudit(broadcast.id)).find((r) => r.phone === '+15555550102');
+    assert.strictEqual(row?.ackedAt, null);
+  });
+
+  it('keeps the FIRST acknowledgment time when a worker acks twice', async () => {
+    // The legally relevant instant is when they first confirmed they were warned —
+    // a duplicate "ok" must not quietly rewrite the record to a later time.
+    const broadcast = await createBroadcast('site-1', 'Alert');
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    const first = (await getBroadcastAudit(broadcast.id)).find((r) => r.phone === '+15555550101')?.ackedAt;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await recordBroadcastAck(broadcast.id, '+15555550101');
+    const second = (await getBroadcastAudit(broadcast.id)).find((r) => r.phone === '+15555550101')?.ackedAt;
+
+    assert.strictEqual(second, first, 'the original ack time survives a repeat ack');
+  });
+
+  it('records when a worker was escalated to a voice call', async () => {
+    const broadcast = await createBroadcast('site-1', 'Alert');
+    await recordEscalation(broadcast.id, '+15555550102');
+
+    const row = (await getBroadcastAudit(broadcast.id)).find((r) => r.phone === '+15555550102');
+    assert.ok(row?.escalatedAt, 'an escalated worker has an escalatedAt timestamp');
+    assert.ok(Number.isFinite(new Date(/** @type {string} */ (row.escalatedAt)).getTime()));
+    assert.strictEqual(row?.ackedAt, null, 'escalating does not fabricate an acknowledgment');
+  });
+
+  it('returns no rows for an unknown broadcast', async () => {
+    assert.deepStrictEqual(await getBroadcastAudit('does-not-exist'), []);
   });
 });

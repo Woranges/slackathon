@@ -55,7 +55,43 @@ describe('placeEscalationCall', () => {
     const body = captured.options.body;
     assert.strictEqual(body.get('To'), '+15555550101', 'destination number');
     assert.strictEqual(body.get('From'), '+15550000000', 'caller id');
-    assert.ok(body.get('Twiml').includes('<Say>Evacuate zone 3 now</Say>'), 'reads the message aloud');
+    assert.ok(
+      body.get('Twiml').includes('<Say language="en-US">Evacuate zone 3 now</Say>'),
+      'reads the message aloud, in English by default',
+    );
+  });
+
+  it('speaks the call in the worker’s language when one is given', async () => {
+    // The whole point of the escalation call is that it reaches a worker who did
+    // not read the text. Reading it to them in a language they do not speak — or
+    // with an English voice mangling Spanish words — defeats it.
+    for (const v of TWILIO_VARS) process.env[v] = 'x';
+    /** @type {any} */
+    let body = null;
+    globalThis.fetch = async (_url, options) => {
+      body = options.body;
+      return new Response('{}', { status: 201 });
+    };
+
+    await placeEscalationCall('+15555550102', 'Evacúe la zona 3 ahora', 'es-MX');
+
+    assert.ok(body.get('Twiml').includes('<Say language="es-MX">'), 'uses a Spanish voice');
+    assert.ok(body.get('Twiml').includes('Evacúe la zona 3 ahora'), 'speaks the Spanish text');
+  });
+
+  it('escapes the language attribute so it cannot break out of the Say element', async () => {
+    for (const v of TWILIO_VARS) process.env[v] = 'x';
+    /** @type {any} */
+    let body = null;
+    globalThis.fetch = async (_url, options) => {
+      body = options.body;
+      return new Response('{}', { status: 201 });
+    };
+
+    await placeEscalationCall('+15555550101', 'hi', 'es"><Hangup/><Say language="en-US');
+
+    const twiml = body.get('Twiml');
+    assert.ok(!twiml.includes('<Hangup/>'), 'no injected TwiML verb survives');
   });
 
   it('escapes XML-unsafe characters in the spoken message', async () => {
