@@ -1,10 +1,10 @@
 {
   "display_information": {
-    "name": "Claude the Builder"
+    "name": "HazTrack"
   },
   "features": {
     "agent_view": {
-      "agent_description": "Hi, I am an agent built using Bolt for JavaScript. I am here to help you out!",
+      "agent_description": "HazTrack — field reports, safety alerts, and RFIs from the crew's phone straight into Slack and Procore. Ask me to find past reports, too.",
       "suggested_prompts": []
     },
     "app_home": {
@@ -13,7 +13,7 @@
       "messages_tab_read_only_enabled": false
     },
     "bot_user": {
-      "display_name": "Claude the Builder",
+      "display_name": "HazTrack",
       "always_online": true
     },
     "slash_commands": [
