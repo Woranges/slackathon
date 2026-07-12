@@ -11,6 +11,7 @@ import {
   getWorkersBySite,
   hasAcked,
   recordBroadcastAck,
+  resolveSiteId,
   setBroadcastMessage,
   siteLabel,
 } from '../../lib/db.js';
@@ -101,6 +102,19 @@ describe('siteLabel', () => {
   it('falls back to the id for an unknown site, and null for empty', () => {
     assert.strictEqual(siteLabel('site-xyz'), 'site-xyz');
     assert.strictEqual(siteLabel(null), null);
+  });
+});
+
+describe('resolveSiteId', () => {
+  it('resolves a friendly name (any case) to its id', () => {
+    assert.strictEqual(resolveSiteId('Park Place'), 'site-1');
+    assert.strictEqual(resolveSiteId('park place'), 'site-1');
+    assert.strictEqual(resolveSiteId('  Cedar Yards '), 'site-2');
+  });
+
+  it('passes an id through, and returns unknown input unchanged', () => {
+    assert.strictEqual(resolveSiteId('site-1'), 'site-1');
+    assert.strictEqual(resolveSiteId('some-other-site'), 'some-other-site');
   });
 });
 

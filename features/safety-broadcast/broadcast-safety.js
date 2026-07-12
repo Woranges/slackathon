@@ -7,7 +7,14 @@
 // avoid 10-2, downtown site"), handling that variation better than a fixed
 // regex would.
 
-import { createBroadcast, getWorkersBySite, hasAcked, setBroadcastMessage, siteLabel } from '../../lib/db.js';
+import {
+  createBroadcast,
+  getWorkersBySite,
+  hasAcked,
+  resolveSiteId,
+  setBroadcastMessage,
+  siteLabel,
+} from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
 import { placeEscalationCall, sendSms } from '../../lib/twilio.js';
@@ -123,15 +130,19 @@ function scheduleEscalationSweep(broadcast, workers) {
  * fan-out + scoreboard + follow-up. Best-effort per send: one bad number never
  * aborts the rest of a safety alert.
  * @param {{ site: string, message: string, client: any, channel: string }} params
- *   `site` is the lookup id (getWorkersBySite); the scoreboard shows its friendly name.
+ *   `site` may be the id ("site-1") or the friendly name ("Park Place"); it's
+ *   resolved to the id so registered workers are found either way. The scoreboard
+ *   shows the friendly name.
  * @returns {Promise<{ sent: number, total: number, broadcastId: string | null }>}
  */
 export async function broadcastToSite({ site, message, client, channel }) {
-  const workers = await getWorkersBySite(site);
+  // Accept "Park Place" or "site-1" — resolve to the id the workers are keyed by.
+  const siteId = resolveSiteId(site) ?? site;
+  const workers = await getWorkersBySite(siteId);
   if (workers.length === 0) return { sent: 0, total: 0, broadcastId: null };
 
   // Record the broadcast so replies can be counted against it.
-  const broadcast = await createBroadcast(site, message);
+  const broadcast = await createBroadcast(siteId, message);
 
   // Text every worker in their language. Wrap each send so one failure (a bad
   // number, or Twilio not being configured yet) doesn't abort the whole
@@ -151,7 +162,7 @@ export async function broadcastToSite({ site, message, client, channel }) {
   // Post the live scoreboard, then remember its location so inbound acks can update it.
   const posted = await client.chat.postMessage({
     channel,
-    text: formatBroadcastStatus({ site: siteLabel(site) ?? site, message, acknowledged: 0, total: workers.length }),
+    text: formatBroadcastStatus({ site: siteLabel(siteId) ?? siteId, message, acknowledged: 0, total: workers.length }),
   });
   if (posted.ts) {
     await setBroadcastMessage(broadcast.id, channel, posted.ts);
