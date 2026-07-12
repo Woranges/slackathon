@@ -1,8 +1,11 @@
 // Owner: safety-broadcast feature.
 //
 // Inbound Twilio webhook — worker SMS replies land here (issue reports,
-// broadcast acknowledgments). Only reachable when running in HTTP mode
-// (app-oauth.js), since Socket Mode (app.js) exposes no inbound HTTP endpoint.
+// broadcast acknowledgments). Served by a small HTTP listener that runs inside
+// app.js (Socket Mode) — see listeners/webhooks/startTwilioWebhookServer — so
+// inbound acks share the same in-memory store as the Slack button handlers that
+// create broadcasts. (app-oauth.js mounts the same handler on its Express
+// receiver for the OAuth/HTTP deployment.)
 //
 // Reply classification is LLM-driven rather than exact-string matching
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
@@ -164,9 +167,15 @@ export async function handleTwilioInboundSms(req, res, client) {
       // carries no broadcast id), then bump the live "X/Y acknowledged" scoreboard.
       const worker = from ? await getWorkerByPhone(from) : null;
       const broadcast = worker ? await getLatestBroadcastForSite(worker.siteId) : null;
+      if (!broadcast) {
+        console.log(
+          `[ack] "${body}" from ${from}: no active broadcast for site ${worker?.siteId ?? '(unknown worker)'}`,
+        );
+      }
       if (broadcast && from) {
         await recordBroadcastAck(broadcast.id, from);
         const { acknowledged, total } = await getAckStatus(broadcast.id);
+        console.log(`[ack] ${from} acknowledged broadcast ${broadcast.id} — now ${acknowledged}/${total}`);
         if (broadcast.channel && broadcast.messageTs) {
           try {
             await client.chat.update({
