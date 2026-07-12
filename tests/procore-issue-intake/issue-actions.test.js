@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   applyIssueStatus,
   buildAssignmentMessage,
+  buildEscalationBroadcast,
   handleIssueAssignSelect,
   handleIssueResolved,
 } from '../../features/procore-issue-intake/issue-actions.js';
@@ -116,6 +117,37 @@ describe('buildAssignmentMessage', () => {
     const msg = buildAssignmentMessage([], null);
     assert.match(msg, /assigned a new RFI/);
     assert.match(msg, /review the details in Procore/);
+  });
+});
+
+describe('buildEscalationBroadcast', () => {
+  const safetyCard = [
+    { type: 'header', text: { type: 'plain_text', text: ':rotating_light: Safety report' } },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: '*Area:*\nEast stairwell, Level 2' },
+        { type: 'mrkdwn', text: '*Site:*\nPark Place' },
+        { type: 'mrkdwn', text: '*Severity:*\nurgent' },
+      ],
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: '*Description:*\nGuardrail missing at the floor opening' } },
+  ];
+
+  it('builds a site-wide alert with location, hazard, severity, and an ack prompt', () => {
+    const msg = buildEscalationBroadcast(safetyCard);
+    assert.match(msg, /SAFETY ALERT/);
+    assert.match(msg, /Park Place/);
+    assert.match(msg, /urgent/);
+    assert.match(msg, /Location: East stairwell, Level 2/);
+    assert.match(msg, /Hazard: Guardrail missing at the floor opening/);
+    assert.match(msg, /Reply to confirm/);
+  });
+
+  it('degrades gracefully with no card details', () => {
+    const msg = buildEscalationBroadcast([]);
+    assert.match(msg, /SAFETY ALERT/);
+    assert.match(msg, /Reply to confirm/);
   });
 });
 

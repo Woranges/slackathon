@@ -8,10 +8,17 @@
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
 // match would miss most of them.
 
-import { recordBroadcastAck } from '../../lib/db.js';
+import {
+  getAckStatus,
+  getLatestBroadcastForSite,
+  getWorkerByPhone,
+  recordBroadcastAck,
+  siteLabel,
+} from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { postIssueCard } from '../procore-issue-intake/issue-card.js';
 import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
+import { formatBroadcastStatus } from './broadcast-safety.js';
 
 // Issue-intake conversations over SMS are keyed by phone number; this stands in
 // for the Slack thread key that the same flow uses in the DM path.
@@ -153,10 +160,30 @@ export async function handleTwilioInboundSms(req, res, client) {
     const intent = await classifyReply(body);
 
     if (intent === 'acknowledgment') {
-      // TODO: look up the actually-open broadcast for this worker/site instead
-      // of a hardcoded placeholder ID, once lib/db.js's broadcast table exists.
-      await recordBroadcastAck('TODO-broadcast-id', from);
-      // TODO: update the live Slack message ("38/45 acknowledged") via client.chat.update.
+      // Route the ack to this worker's most recent site broadcast (the SMS itself
+      // carries no broadcast id), then bump the live "X/Y acknowledged" scoreboard.
+      const worker = from ? await getWorkerByPhone(from) : null;
+      const broadcast = worker ? await getLatestBroadcastForSite(worker.siteId) : null;
+      if (broadcast && from) {
+        await recordBroadcastAck(broadcast.id, from);
+        const { acknowledged, total } = await getAckStatus(broadcast.id);
+        if (broadcast.channel && broadcast.messageTs) {
+          try {
+            await client.chat.update({
+              channel: broadcast.channel,
+              ts: broadcast.messageTs,
+              text: formatBroadcastStatus({
+                site: siteLabel(broadcast.siteId) ?? broadcast.siteId,
+                message: broadcast.message,
+                acknowledged,
+                total,
+              }),
+            });
+          } catch (e) {
+            console.error(`Failed to update ack scoreboard: ${e}`);
+          }
+        }
+      }
     } else if (intent === 'issue_report' && from) {
       await runIssueIntake(from, body, photoUrl, client, res);
       return;

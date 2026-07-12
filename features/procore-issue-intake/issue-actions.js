@@ -11,6 +11,10 @@
 
 import { addRfiReply } from '../../agent/mcp/procore.js';
 import { sendSms } from '../../lib/twilio.js';
+// Escalate reuses the safety-broadcast feature's fan-out (its owner's code,
+// exported for exactly this): escalating a safety card sends the same site-wide
+// alert + live ack scoreboard the /broadcast-safety command does.
+import { broadcastToSite } from '../safety-broadcast/broadcast-safety.js';
 import {
   ISSUE_ASSIGN_ACTION,
   ISSUE_ASSIGN_SELECT_ACTION,
@@ -19,20 +23,20 @@ import {
 } from './issue-card.js';
 
 /**
- * Parse the button `value`, which carries the reporter phone + RFI id as JSON.
- * Tolerates a bare phone string (older cards) so old buttons don't break.
+ * Parse the button `value`, which carries the reporter phone + RFI id + site id
+ * as JSON. Tolerates a bare phone string (older cards) so old buttons don't break.
  * @param {string | undefined} raw
- * @returns {{ phone: string | undefined, rfiId: number | null }}
+ * @returns {{ phone: string | undefined, rfiId: number | null, siteId: string | null }}
  */
 function parseButtonValue(raw) {
-  if (!raw) return { phone: undefined, rfiId: null };
+  if (!raw) return { phone: undefined, rfiId: null, siteId: null };
   try {
     const v = JSON.parse(raw);
-    if (v && typeof v === 'object') return { phone: v.phone, rfiId: v.rfiId ?? null };
+    if (v && typeof v === 'object') return { phone: v.phone, rfiId: v.rfiId ?? null, siteId: v.siteId ?? null };
   } catch {
     // Not JSON — an older card whose value was the bare phone.
   }
-  return { phone: raw, rfiId: null };
+  return { phone: raw, rfiId: null, siteId: null };
 }
 
 /**
@@ -235,11 +239,56 @@ export async function handleIssueAssignSelect({ ack, body, client, logger }) {
     logger.error(`Failed to handle issue assign-select: ${e}`);
   }
 }
-export const handleIssueEscalate = makeHandler(
-  'Escalated',
-  ':rotating_light:',
-  'Your reported issue has been escalated for urgent attention.',
-);
+/**
+ * Compose the site-wide safety alert sent when a safety card is escalated,
+ * pulling the hazard details out of the card blocks. Pure.
+ * @param {any[] | undefined} blocks
+ * @returns {string}
+ */
+export function buildEscalationBroadcast(blocks) {
+  const area = cardField(blocks, 'Area');
+  const description = cardField(blocks, 'Description');
+  const site = cardField(blocks, 'Site');
+  const severity = cardField(blocks, 'Severity');
+  const lines = [
+    `🚨 SAFETY ALERT${site ? ` — ${site}` : ''}${severity ? ` (${severity})` : ''}`,
+    area ? `Location: ${area}` : null,
+    description ? `Hazard: ${description}` : null,
+    'Reply to confirm you have seen this.',
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+/**
+ * Handle the Escalate button (safety cards): fan a site-wide safety alert out to
+ * every worker and post the live acknowledgment scoreboard, then stamp the card.
+ * The broadcast is wrapped so a Twilio/Slack hiccup still lets the card update.
+ * @param {import('@slack/bolt').AllMiddlewareArgs & import('@slack/bolt').SlackActionMiddlewareArgs<import('@slack/bolt').BlockButtonAction>} args
+ * @returns {Promise<void>}
+ */
+export async function handleIssueEscalate({ ack, body, client, logger }) {
+  await ack();
+  try {
+    const { siteId } = parseButtonValue(body.actions[0]?.value);
+    const channel = /** @type {any} */ (body).channel?.id;
+    const message = buildEscalationBroadcast(/** @type {any} */ (body).message?.blocks);
+
+    let note = 'safety broadcast skipped (no site on record)';
+    if (siteId) {
+      try {
+        const { sent, total } = await broadcastToSite({ site: siteId, message, client, channel });
+        note = total > 0 ? `site-wide safety alert sent (${sent}/${total})` : 'no workers registered for this site';
+      } catch (e) {
+        note = 'safety broadcast failed to send';
+        logger?.info?.(`Escalation broadcast failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    await updateCard(client, body, `:rotating_light: *Escalated* by ${actor(body)} — ${note}`, 'Issue escalated');
+  } catch (e) {
+    logger.error(`Failed to handle issue escalate: ${e}`);
+  }
+}
 export const handleIssueResolved = makeHandler(
   'Resolved',
   ':ballot_box_with_check:',

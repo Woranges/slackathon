@@ -5,11 +5,13 @@ import {
   createBroadcast,
   getAckStatus,
   getBroadcast,
+  getLatestBroadcastForSite,
   getWorkerByPhone,
   getWorkerBySlackUserId,
   getWorkersBySite,
   recordBroadcastAck,
   setBroadcastMessage,
+  siteLabel,
 } from '../../lib/db.js';
 
 describe('getWorkerByPhone', () => {
@@ -87,6 +89,33 @@ describe('recordBroadcastAck / getAckStatus', () => {
 
   it('reports zeros for an unknown broadcast', async () => {
     assert.deepStrictEqual(await getAckStatus('does-not-exist'), { acknowledged: 0, total: 0 });
+  });
+});
+
+describe('getLatestBroadcastForSite', () => {
+  it('returns the most recent broadcast for a site', async () => {
+    const older = await createBroadcast('site-2', 'first');
+    // Force a strictly later createdAt so the ordering is deterministic.
+    older.createdAt = '2000-01-01T00:00:00.000Z';
+    const newer = await createBroadcast('site-2', 'second');
+    newer.createdAt = '2030-01-01T00:00:00.000Z';
+    const latest = await getLatestBroadcastForSite('site-2');
+    assert.strictEqual(latest?.id, newer.id);
+  });
+
+  it('returns null when the site has no broadcasts', async () => {
+    assert.strictEqual(await getLatestBroadcastForSite('site-no-broadcasts'), null);
+  });
+});
+
+describe('siteLabel', () => {
+  it('maps a known site id to its human name', () => {
+    assert.strictEqual(siteLabel('site-1'), 'Park Place');
+  });
+
+  it('falls back to the id for an unknown site, and null for empty', () => {
+    assert.strictEqual(siteLabel('site-xyz'), 'site-xyz');
+    assert.strictEqual(siteLabel(null), null);
   });
 });
 
