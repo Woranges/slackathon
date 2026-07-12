@@ -29,7 +29,9 @@ describe('recordAckAndUpdateScoreboard', () => {
     assert.strictEqual(update.channel, 'C123');
     assert.strictEqual(update.ts, '1700000000.000100');
     assert.ok(update.text.includes(`1/${total} acknowledged`), `scoreboard shows 1 of ${total} acknowledged`);
-    assert.ok(update.text.includes('site-1'), 'scoreboard shows the site');
+    // The scoreboard shows the site's friendly name (siteLabel), matching the
+    // initial post — site-1 renders as "Park Place".
+    assert.ok(update.text.includes('Park Place'), 'scoreboard shows the site name');
   });
 
   it('does nothing for a reply from an unknown phone', async () => {

@@ -1,14 +1,17 @@
 // Owner: safety-broadcast feature.
 //
 // Inbound Twilio webhook — worker SMS replies land here (issue reports,
-// broadcast acknowledgments). Only reachable when running in HTTP mode
-// (app-oauth.js), since Socket Mode (app.js) exposes no inbound HTTP endpoint.
+// broadcast acknowledgments). Served by a small HTTP listener that runs inside
+// app.js (Socket Mode) — see listeners/webhooks/startTwilioWebhookServer — so
+// inbound acks share the same in-memory store as the Slack button handlers that
+// create broadcasts. (app-oauth.js mounts the same handler on its Express
+// receiver for the OAuth/HTTP deployment.)
 //
 // Reply classification is LLM-driven rather than exact-string matching
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
 // match would miss most of them.
 
-import { getAckStatus, getLatestBroadcastForPhone, recordBroadcastAck } from '../../lib/db.js';
+import { getAckStatus, getLatestBroadcastForPhone, recordBroadcastAck, siteLabel } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { postIssueCard } from '../procore-issue-intake/issue-card.js';
 import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
@@ -117,7 +120,7 @@ export async function recordAckAndUpdateScoreboard(from, client) {
       channel: broadcast.channel,
       ts: broadcast.messageTs,
       text: formatBroadcastStatus({
-        site: broadcast.siteId,
+        site: siteLabel(broadcast.siteId) ?? broadcast.siteId,
         message: broadcast.message,
         acknowledged,
         total,
@@ -191,7 +194,15 @@ export async function handleTwilioInboundSms(req, res, client) {
     const intent = await classifyReply(body);
 
     if (intent === 'acknowledgment') {
-      await recordAckAndUpdateScoreboard(from, client);
+      // Record the ack against the worker's latest broadcast and bump the live
+      // "X/Y acknowledged" scoreboard. Log the outcome for demo visibility.
+      const broadcast = await recordAckAndUpdateScoreboard(from, client);
+      if (broadcast) {
+        const { acknowledged, total } = await getAckStatus(broadcast.id);
+        console.log(`[ack] ${from} acknowledged broadcast ${broadcast.id} — now ${acknowledged}/${total}`);
+      } else {
+        console.log(`[ack] "${body}" from ${from}: no active broadcast matched`);
+      }
     } else if (intent === 'issue_report' && from) {
       await runIssueIntake(from, body, photoUrl, client, res);
       return;

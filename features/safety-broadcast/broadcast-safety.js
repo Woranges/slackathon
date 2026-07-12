@@ -7,7 +7,7 @@
 // avoid 10-2, downtown site"), handling that variation better than a fixed
 // regex would.
 
-import { createBroadcast, getWorkersBySite, hasAcked, setBroadcastMessage } from '../../lib/db.js';
+import { createBroadcast, getWorkersBySite, hasAcked, setBroadcastMessage, siteLabel } from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { translateText } from '../../lib/translate.js';
 import { placeEscalationCall, sendSms } from '../../lib/twilio.js';
@@ -94,27 +94,41 @@ export async function escalateUnacknowledged(broadcast, workers, { placeCall = p
 }
 
 /**
- * @param {import('@slack/bolt').SlackCommandMiddlewareArgs & import('@slack/bolt').AllMiddlewareArgs} args
- * @returns {Promise<void>}
+ * After a broadcast, schedule a voice-call sweep of anyone who still hasn't
+ * acknowledged within the window. Extracted so BOTH callers of broadcastToSite
+ * (the slash command and the Escalate button) get escalation. The delay is read
+ * at call time so it can be tuned per run (ESCALATION_DELAY_MS=30000 to see it
+ * quickly in a demo); a negative value disables escalation. .unref() keeps the
+ * pending timer from holding the process open on its own.
+ * @param {import('../../lib/db.js').Broadcast} broadcast
+ * @param {import('../../lib/db.js').Worker[]} workers
  */
-export async function handleBroadcastSafetyCommand({ command, ack, respond, client }) {
-  await ack();
-
-  const parsed = await parseCommandText(command.text);
-  if (!parsed) {
-    await respond(
-      'Could not figure out the message and site from that — try including both, e.g. "crane lift at zone 3, avoid 10am-2pm, downtown site".',
-    );
-    return;
+function scheduleEscalationSweep(broadcast, workers) {
+  const delayMs = Number(process.env.ESCALATION_DELAY_MS ?? 15 * 60 * 1000);
+  if (Number.isFinite(delayMs) && delayMs >= 0) {
+    setTimeout(() => {
+      escalateUnacknowledged(broadcast, workers).catch((error) =>
+        console.error('[broadcast-safety] escalation sweep failed:', error),
+      );
+    }, delayMs).unref();
   }
+}
 
-  const { message, site } = parsed;
+/**
+ * Send a safety message to every worker at a site (translated per worker), post
+ * the live acknowledgment scoreboard to Slack, register it so inbound acks
+ * (features/safety-broadcast/inbound-sms.js) can update the count, and schedule
+ * the escalation sweep. Shared by the /broadcast-safety slash command and the
+ * issue card's Escalate button, so a safety escalation reuses the exact same
+ * fan-out + scoreboard + follow-up. Best-effort per send: one bad number never
+ * aborts the rest of a safety alert.
+ * @param {{ site: string, message: string, client: any, channel: string }} params
+ *   `site` is the lookup id (getWorkersBySite); the scoreboard shows its friendly name.
+ * @returns {Promise<{ sent: number, total: number, broadcastId: string | null }>}
+ */
+export async function broadcastToSite({ site, message, client, channel }) {
   const workers = await getWorkersBySite(site);
-
-  if (workers.length === 0) {
-    await respond(`No workers are registered for site "${site}", so nothing was sent.`);
-    return;
-  }
+  if (workers.length === 0) return { sent: 0, total: 0, broadcastId: null };
 
   // Record the broadcast so replies can be counted against it.
   const broadcast = await createBroadcast(site, message);
@@ -130,32 +144,47 @@ export async function handleBroadcastSafetyCommand({ command, ack, respond, clie
       await sendSms(worker.phone, translated);
       sent += 1;
     } catch (error) {
-      console.error(`[broadcast-safety] SMS to ${worker.phone} failed:`, error);
+      console.error(`[safety-broadcast] SMS to ${worker.phone} failed:`, error);
     }
   }
 
-  // Post the live scoreboard, then remember its location so inbound acks can
-  // update it (task #2, features/safety-broadcast/inbound-sms.js).
+  // Post the live scoreboard, then remember its location so inbound acks can update it.
   const posted = await client.chat.postMessage({
-    channel: command.channel_id,
-    text: formatBroadcastStatus({ site, message, acknowledged: 0, total: workers.length }),
+    channel,
+    text: formatBroadcastStatus({ site: siteLabel(site) ?? site, message, acknowledged: 0, total: workers.length }),
   });
   if (posted.ts) {
-    await setBroadcastMessage(broadcast.id, command.channel_id, posted.ts);
+    await setBroadcastMessage(broadcast.id, channel, posted.ts);
   }
 
-  // After a window, voice-call anyone who still hasn't acknowledged. The delay is
-  // read at call time so it can be tuned per run (e.g. ESCALATION_DELAY_MS=30000
-  // to see it quickly in a demo); a negative value disables escalation. .unref()
-  // keeps this pending timer from holding the process open on its own.
-  const delayMs = Number(process.env.ESCALATION_DELAY_MS ?? 15 * 60 * 1000);
-  if (Number.isFinite(delayMs) && delayMs >= 0) {
-    setTimeout(() => {
-      escalateUnacknowledged(broadcast, workers).catch((error) =>
-        console.error('[broadcast-safety] escalation sweep failed:', error),
-      );
-    }, delayMs).unref();
+  // Chase non-responders by voice after the window (both callers get this).
+  scheduleEscalationSweep(broadcast, workers);
+
+  return { sent, total: workers.length, broadcastId: broadcast.id };
+}
+
+/**
+ * @param {import('@slack/bolt').SlackCommandMiddlewareArgs & import('@slack/bolt').AllMiddlewareArgs} args
+ * @returns {Promise<void>}
+ */
+export async function handleBroadcastSafetyCommand({ command, ack, respond, client }) {
+  await ack();
+
+  const parsed = await parseCommandText(command.text);
+  if (!parsed) {
+    await respond(
+      'Could not figure out the message and site from that — try including both, e.g. "crane lift at zone 3, avoid 10am-2pm, downtown site".',
+    );
+    return;
   }
 
-  await respond(`Safety broadcast sent to ${sent}/${workers.length} worker(s) at ${site}. Live count posted above.`);
+  const { message, site } = parsed;
+  const { sent, total } = await broadcastToSite({ site, message, client, channel: command.channel_id });
+
+  if (total === 0) {
+    await respond(`No workers are registered for site "${site}", so nothing was sent.`);
+    return;
+  }
+
+  await respond(`Safety broadcast sent to ${sent}/${total} worker(s) at ${site}. Live count posted above.`);
 }

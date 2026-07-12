@@ -12,6 +12,7 @@ import {
   hasAcked,
   recordBroadcastAck,
   setBroadcastMessage,
+  siteLabel,
 } from '../../lib/db.js';
 
 describe('getWorkerByPhone', () => {
@@ -89,6 +90,17 @@ describe('recordBroadcastAck / getAckStatus', () => {
 
   it('reports zeros for an unknown broadcast', async () => {
     assert.deepStrictEqual(await getAckStatus('does-not-exist'), { acknowledged: 0, total: 0 });
+  });
+});
+
+describe('siteLabel', () => {
+  it('maps a known site id to its human name', () => {
+    assert.strictEqual(siteLabel('site-1'), 'Park Place');
+  });
+
+  it('falls back to the id for an unknown site, and null for empty', () => {
+    assert.strictEqual(siteLabel('site-xyz'), 'site-xyz');
+    assert.strictEqual(siteLabel(null), null);
   });
 });
 

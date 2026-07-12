@@ -4,6 +4,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   buildIssueCardBlocks,
   ISSUE_ASSIGN_ACTION,
+  ISSUE_ASSIGN_SELECT_ACTION,
   ISSUE_ESCALATE_ACTION,
   ISSUE_RESOLVED_ACTION,
   postIssueCard,
@@ -32,14 +33,48 @@ function hasPhotoHint(blocks) {
 }
 
 describe('buildIssueCardBlocks', () => {
-  it('includes the three action buttons carrying the reporter phone + RFI id', () => {
+  it('an RFI card with no assignees shows a plain Assign button + Resolved (reporter phone + RFI id)', () => {
     const actions = actionsBlock(buildIssueCardBlocks(record, { id: 42, url: 'https://x/42' }));
     assert.ok(actions, 'expected an actions block');
-    const byAction = Object.fromEntries(actions.elements.map((e) => [e.action_id, JSON.parse(e.value)]));
-    for (const action of [ISSUE_ASSIGN_ACTION, ISSUE_ESCALATE_ACTION, ISSUE_RESOLVED_ACTION]) {
-      assert.strictEqual(byAction[action].phone, '+15555550101');
-      assert.strictEqual(byAction[action].rfiId, 42);
+    const ids = actions.elements.map((e) => e.action_id);
+    assert.deepStrictEqual(ids, [ISSUE_ASSIGN_ACTION, ISSUE_RESOLVED_ACTION]);
+    assert.ok(!ids.includes(ISSUE_ESCALATE_ACTION), 'RFI card should not have Escalate');
+    for (const el of actions.elements) {
+      const v = JSON.parse(el.value);
+      assert.strictEqual(v.phone, '+15555550101');
+      assert.strictEqual(v.rfiId, 42);
     }
+  });
+
+  it('an RFI card with assignees shows an Assign dropdown carrying each worker + Resolved', () => {
+    const assignees = [
+      { name: 'Sofia Reyes', phone: '+15555550102' },
+      { name: 'Chen Wei', phone: '+15555550103' },
+    ];
+    const actions = actionsBlock(buildIssueCardBlocks(record, { id: 42, url: 'https://x/42' }, assignees));
+    const select = actions.elements.find((e) => e.action_id === ISSUE_ASSIGN_SELECT_ACTION);
+    assert.ok(select, 'expected an Assign dropdown');
+    assert.strictEqual(select.type, 'static_select');
+    assert.strictEqual(select.options.length, 2);
+    const first = JSON.parse(select.options[0].value);
+    assert.strictEqual(first.p, '+15555550102');
+    assert.strictEqual(first.n, 'Sofia Reyes');
+    assert.strictEqual(first.r, 42);
+    // Resolved is still present; no plain Assign button when the dropdown is shown.
+    const ids = actions.elements.map((e) => e.action_id);
+    assert.ok(ids.includes(ISSUE_RESOLVED_ACTION));
+    assert.ok(!ids.includes(ISSUE_ASSIGN_ACTION));
+  });
+
+  it('a safety card shows Escalate + Resolved, never Assign', () => {
+    const actions = actionsBlock(
+      buildIssueCardBlocks({ ...record, reportType: 'safety', severity: 'urgent' }, { id: 7, url: null }, [
+        { name: 'Sofia Reyes', phone: '+15555550102' },
+      ]),
+    );
+    const ids = actions.elements.map((e) => e.action_id);
+    assert.deepStrictEqual(ids, [ISSUE_ESCALATE_ACTION, ISSUE_RESOLVED_ACTION]);
+    assert.ok(!ids.includes(ISSUE_ASSIGN_ACTION) && !ids.includes(ISSUE_ASSIGN_SELECT_ACTION));
   });
 
   it('never renders an inline image block (photos go in the thread)', () => {
