@@ -1,3 +1,4 @@
+import { searchWorkspace } from '../features/knowledge-agent/rts-engine.js';
 import { runLlmTurn } from '../lib/llm/index.js';
 import { getProcoreMcpServerConfig } from './mcp/procore.js';
 import { createContradictionCheckTool, createEmojiReactionTool, createSearchWorkspaceTool } from './tools/index.js';
@@ -119,17 +120,30 @@ export async function runAgent(text, history = [], deps = undefined) {
   // so RTS fires every time instead of depending on the model to call the tool.
   let augmentedText = text;
   if (RETRIEVAL_RE.test(text)) {
-    try {
-      const result = await searchTool.handler({ query: toSearchQuery(text) });
-      const found = /** @type {any} */ (result).output;
-      if (found) {
-        augmentedText =
-          `${text}\n\n[System: I searched the workspace history for this request. Results below — ` +
-          `answer using them and include the relevant Slack link. Do NOT say you couldn't find it ` +
-          `when results are shown.\n${found}\n]`;
+    const token = deps?.userToken || process.env.SLACK_USER_TOKEN;
+    if (token) {
+      try {
+        const query = toSearchQuery(text);
+        const results = await searchWorkspace(query, token);
+        if (results.length > 0) {
+          // Slack ranks by relevance, so the top hit is the match. Slack returns no
+          // text preview for our block-cards, so hand the model the explicit link and
+          // an unambiguous instruction — otherwise a small model second-guesses the
+          // generic-looking results and hedges.
+          const top = results[0];
+          const list = results
+            .slice(0, 5)
+            .map((r, i) => `${i + 1}. ${r.text}${r.permalink ? ` — ${r.permalink}` : ''}`)
+            .join('\n');
+          augmentedText =
+            `${text}\n\n[System: You already ran a workspace search for "${query}" and found ${results.length} ` +
+            `matching report card(s) in Slack, most relevant first:\n${list}\n\n` +
+            `Result #1 is the one the user wants. Reply with a one-line confirmation and its link: ${top.permalink}. ` +
+            `Do NOT say you couldn't find it, and do NOT ask for more details — the results above are the answer.]`;
+        }
+      } catch {
+        // Best-effort — fall through to a normal turn (the tool is still registered).
       }
-    } catch {
-      // Best-effort — fall through to a normal turn (the tool is still registered).
     }
   }
 
