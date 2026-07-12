@@ -57,12 +57,17 @@ called as tools here.`;
 
 const SLACK_MCP_URL = 'https://mcp.slack.com/mcp';
 
-// The conversational agent decides when to call tools (search_workspace_history,
-// check_for_contradictions). flash-lite is unreliable at that, so this path runs
-// on a stronger model. Only the DM/mention agent uses it — the high-volume intake
-// and translation calls stay on the cheap default — so the smaller free quota is
-// fine. Override with AGENT_MODEL if needed.
+// Model for the conversational agent. Overridable via AGENT_MODEL.
 const AGENT_MODEL = process.env.AGENT_MODEL ?? 'gemini-3.5-flash';
+
+// Retrieval is handled deterministically rather than trusting the model to decide
+// to call the search tool (small models skip it; the reliable ones burn quota).
+// When the message clearly asks to find/recall something from history, we run the
+// workspace search ourselves (a free Slack API call) and hand the model the
+// results to phrase — so RTS fires every time, on any model. The tool stays
+// registered for anything this pattern doesn't catch.
+const RETRIEVAL_RE =
+  /\b(find|search|look ?up|looking for|recall|pull up|dig up|get me|show me|where('?s| is| are)?|did (anyone|someone)|what did we (decide|say))\b/i;
 
 /**
  * @typedef {Object} AgentDeps
@@ -82,7 +87,27 @@ const AGENT_MODEL = process.env.AGENT_MODEL ?? 'gemini-3.5-flash';
  * @returns {Promise<{ responseText: string, history: import('@google/genai').Content[] }>}
  */
 export async function runAgent(text, history = [], deps = undefined) {
-  const tools = [createEmojiReactionTool(deps), createContradictionCheckTool(deps), createSearchWorkspaceTool(deps)];
+  const searchTool = createSearchWorkspaceTool(deps);
+  const tools = [createEmojiReactionTool(deps), createContradictionCheckTool(deps), searchTool];
+
+  // Deterministic retrieval: if the user is clearly asking to find something from
+  // the past, run the workspace search up front and give the model the results,
+  // so RTS fires every time instead of depending on the model to call the tool.
+  let augmentedText = text;
+  if (RETRIEVAL_RE.test(text)) {
+    try {
+      const result = await searchTool.handler({ query: text });
+      const found = /** @type {any} */ (result).output;
+      if (found) {
+        augmentedText =
+          `${text}\n\n[System: I searched the workspace history for this request. Results below — ` +
+          `answer using them and include the relevant Slack link. Do NOT say you couldn't find it ` +
+          `when results are shown.\n${found}\n]`;
+      }
+    } catch {
+      // Best-effort — fall through to a normal turn (the tool is still registered).
+    }
+  }
 
   /** @type {import('../lib/llm/gemini.js').McpServerConfig[]} */
   const mcpServers = [];
@@ -96,5 +121,5 @@ export async function runAgent(text, history = [], deps = undefined) {
     mcpServers.push(procoreMcpConfig);
   }
 
-  return runLlmTurn({ systemPrompt: SYSTEM_PROMPT, history, text, tools, mcpServers, model: AGENT_MODEL });
+  return runLlmTurn({ systemPrompt: SYSTEM_PROMPT, history, text: augmentedText, tools, mcpServers, model: AGENT_MODEL });
 }
