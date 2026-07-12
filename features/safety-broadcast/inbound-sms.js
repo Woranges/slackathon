@@ -11,7 +11,13 @@
 // ("OK") — real replies vary ("got it", "yes", "👍", "roger"), and a rigid
 // match would miss most of them.
 
-import { getAckStatus, getLatestBroadcastForPhone, recordBroadcastAck, siteLabel } from '../../lib/db.js';
+import {
+  getAckStatus,
+  getLatestBroadcastForPhone,
+  recordBroadcastAck,
+  setWorkerLanguage,
+  siteLabel,
+} from '../../lib/db.js';
 import { runLlmTurn } from '../../lib/llm/index.js';
 import { postIssueCard } from '../procore-issue-intake/issue-card.js';
 import { advanceIssueIntake, hasActiveFlow } from '../procore-issue-intake/issue-intake.js';
@@ -56,7 +62,7 @@ never respond in plain text.
 - "other": greetings, small talk, or noise that doesn't start a report and isn't an ack.`;
 
 /**
- * @param {(intent: 'acknowledgment' | 'issue_report' | 'other') => void} onClassified
+ * @param {(result: { intent: 'acknowledgment' | 'issue_report' | 'other', language?: string }) => void} onClassified
  * @returns {import('../../lib/llm/gemini.js').ToolDefinition}
  */
 function createClassifyReplyTool(onClassified) {
@@ -68,12 +74,20 @@ function createClassifyReplyTool(onClassified) {
         type: 'object',
         properties: {
           intent: { type: 'string', enum: ['acknowledgment', 'issue_report', 'other'] },
+          language: {
+            type: 'string',
+            description:
+              'ISO 639-1 code of the language this reply is written in (e.g. "en", "es"). Include it whenever the language is clear from the words — including short replies like "got it" (en), "recibido" (es), "sí" (es). Omit ONLY when a token is genuinely ambiguous between languages (e.g. "ok", "no", a bare number).',
+          },
         },
         required: ['intent'],
       },
     },
     handler: async (args) => {
-      onClassified(/** @type {'acknowledgment' | 'issue_report' | 'other'} */ (args.intent));
+      onClassified({
+        intent: /** @type {'acknowledgment' | 'issue_report' | 'other'} */ (args.intent),
+        language: /** @type {string | undefined} */ (args.language),
+      });
       return { output: 'Classified.' };
     },
   };
@@ -81,17 +95,17 @@ function createClassifyReplyTool(onClassified) {
 
 /**
  * @param {string} text
- * @returns {Promise<'acknowledgment' | 'issue_report' | 'other'>}
+ * @returns {Promise<{ intent: 'acknowledgment' | 'issue_report' | 'other', language?: string }>}
  */
 async function classifyReply(text) {
-  /** @type {'acknowledgment' | 'issue_report' | 'other'} */
-  let intent = 'other';
+  /** @type {{ intent: 'acknowledgment' | 'issue_report' | 'other', language?: string }} */
+  let result = { intent: 'other' };
   const tool = createClassifyReplyTool((classified) => {
-    intent = classified;
+    result = classified;
   });
 
   await runLlmTurn({ systemPrompt: CLASSIFY_SYSTEM_PROMPT, history: [], text, tools: [tool] });
-  return intent;
+  return result;
 }
 
 /**
@@ -191,7 +205,13 @@ export async function handleTwilioInboundSms(req, res, client) {
       return;
     }
 
-    const intent = await classifyReply(body);
+    const { intent, language } = await classifyReply(body);
+
+    // Keep the worker's language in sync with what they actually write, even on a
+    // bare acknowledgment ("got it" -> en, "recibido" -> es) — so later outbound
+    // messages to them follow the language they last used. Issue reports handle
+    // this themselves inside the intake flow; here it covers ack/other replies.
+    if (from && language) await setWorkerLanguage(from, language);
 
     if (intent === 'acknowledgment') {
       // Record the ack against the worker's latest broadcast and bump the live
