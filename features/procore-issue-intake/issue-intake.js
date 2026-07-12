@@ -15,6 +15,12 @@
 //     severity. Filed as a high-priority RFI tagged SAFETY.
 //   - rfi: a question or field condition needing an office/engineer answer.
 //     Optional slot: a drawing/spec reference. Filed as a standard RFI.
+//
+// Language: the same extraction call reports the language of each message, so the
+// bot mirrors the worker's language in its replies and follows a mid-conversation
+// switch (Spanish -> Spanish until they write English -> then English). What gets
+// filed to Slack/Procore is always normalized to English for the office. All of
+// this degrades to English-only if the model/translation call fails.
 
 import { createProcoreRfi, isProcoreConfigured } from '../../agent/mcp/procore.js';
 import { getWorkerByPhone, getWorkerBySlackUserId } from '../../lib/db.js';
@@ -35,6 +41,8 @@ import { buildIssueRecord } from './issue-record.js';
  * @property {boolean} photoAsked
  * @property {{ photoSlackFileId: string | null, photoUrl: string | null }} photo
  * @property {string | null} lastQuestion
+ * @property {string} language - ISO 639-1 code of the language the worker is writing in;
+ *   the bot's replies are mirrored into it, and it follows switches turn-to-turn. Defaults 'en'.
  */
 
 const EXTRACT_SYSTEM = `\
@@ -79,6 +87,11 @@ function createUpdateReportTool(onExtract) {
             description:
               'RFIs only: a drawing/spec/detail reference if mentioned (e.g. "Detail 5/A-301"). Omit if none.',
           },
+          language: {
+            type: 'string',
+            description:
+              'ISO 639-1 code of the language THIS message is written in (e.g. "en", "es", "zh"). Omit if the message is too short or ambiguous to tell (e.g. "ok", "no", a number).',
+          },
         },
         required: ['report_type'],
       },
@@ -101,7 +114,22 @@ function newFlowState() {
     photoAsked: false,
     photo: { photoSlackFileId: null, photoUrl: null },
     lastQuestion: null,
+    language: 'en',
   };
+}
+
+/**
+ * Localize a canonical (English) reply into the worker's current language. A
+ * no-op for English so an English conversation makes zero translation calls;
+ * kept best-effort by translateText (returns the English text if the model call
+ * fails), so a translation hiccup never blocks the reply.
+ * @param {string} text
+ * @param {string} language - ISO 639-1 code.
+ * @returns {Promise<string>}
+ */
+async function localize(text, language) {
+  if (!language || language.toLowerCase().startsWith('en')) return text;
+  return translateText(text, language);
 }
 
 /**
@@ -210,14 +238,22 @@ async function fileReport(state, context) {
     (context.phone ? await getWorkerByPhone(context.phone) : null) ??
     (context.slackUserId ? await getWorkerBySlackUserId(context.slackUserId) : null);
 
-  // TODO: translate using worker?.preferredLanguage once translate.js is wired.
-  const englishDescription = await translateText(state.slots.description ?? '', 'en');
+  // Normalize the report to English for the office (Slack card + Procore RFI),
+  // even though the conversation happened in the worker's language. Only translate
+  // when the worker wasn't already writing English, so English reports make no
+  // extra calls; best-effort (translateText returns the original on failure).
+  const isEnglish = !state.language || state.language.toLowerCase().startsWith('en');
+  const englishDescription = isEnglish
+    ? (state.slots.description ?? '')
+    : await translateText(state.slots.description ?? '', 'en');
+  const englishLocation =
+    isEnglish || !state.slots.location ? state.slots.location : await translateText(state.slots.location, 'en');
 
   const record = buildIssueRecord({
     phone: context.phone ?? 'unknown',
     worker,
     slackUserId: context.slackUserId,
-    area: state.slots.location ?? 'Unspecified',
+    area: englishLocation ?? 'Unspecified',
     description: englishDescription,
     reportType: state.stream ?? 'rfi',
     severity: state.slots.severity,
@@ -292,22 +328,28 @@ export async function advanceIssueIntake(channelId, threadTs, text, context = {}
     if (fields.description) state.slots.description = fields.description;
     if (fields.severity) state.slots.severity = fields.severity;
     if (fields.spec_reference) state.slots.specReference = fields.spec_reference;
+    // Mirror the worker's language, and follow switches turn-to-turn. Only update
+    // when the model is confident enough to report one (it omits it for short,
+    // ambiguous replies like "ok"/"no"), so the language stays sticky otherwise.
+    if (fields.language) state.language = fields.language;
   }
   // If the model never classified (e.g. a photo-only opener), default to rfi.
   if (!state.stream) state.stream = 'rfi';
 
+  // lastQuestion is kept in English (it's internal context for the extractor);
+  // only the outgoing reply is localized into the worker's language.
   const step = nextStep(state);
   if (step.action === 'ask') {
     state.lastQuestion = questionFor(step.field, state.stream);
-    return { reply: state.lastQuestion, done: false };
+    return { reply: await localize(state.lastQuestion, state.language), done: false };
   }
   if (step.action === 'askPhoto') {
     state.photoAsked = true;
     state.lastQuestion = PHOTO_QUESTION;
-    return { reply: PHOTO_QUESTION, done: false };
+    return { reply: await localize(PHOTO_QUESTION, state.language), done: false };
   }
 
   const { record, rfi } = await fileReport(state, context);
   activeFlows.delete(k);
-  return { reply: confirmation(state.stream, rfi), done: true, record, rfi };
+  return { reply: await localize(confirmation(state.stream, rfi), state.language), done: true, record, rfi };
 }

@@ -4,71 +4,55 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { translateText } from '../../lib/translate.js';
 
 describe('translateText', () => {
-  // translate.js intentionally prints a warning/error whenever it falls back to
-  // the original text. Those are expected here, so we silence the console
-  // during the suite, and we restore the real fetch + env after each test so
-  // the tests stay independent of one another.
-  const originalFetch = global.fetch;
-  const originalKey = process.env.TRANSLATE_API_KEY;
-  let originalWarn;
+  // translate.js prints an error whenever it falls back to the original text.
+  // Those are expected in the failure tests, so silence the console.
   let originalError;
-
   beforeEach(() => {
-    originalWarn = console.warn;
     originalError = console.error;
-    console.warn = () => {};
     console.error = () => {};
   });
-
   afterEach(() => {
-    global.fetch = originalFetch;
-    console.warn = originalWarn;
     console.error = originalError;
-    if (originalKey === undefined) {
-      delete process.env.TRANSLATE_API_KEY;
-    } else {
-      process.env.TRANSLATE_API_KEY = originalKey;
-    }
   });
 
-  it('returns the text unchanged when the target language is English', async () => {
-    assert.strictEqual(await translateText('Hard hats required', 'en'), 'Hard hats required');
-    assert.strictEqual(await translateText('Hard hats required', 'EN'), 'Hard hats required');
-    assert.strictEqual(await translateText('Hard hats required', 'en-US'), 'Hard hats required');
-  });
-
-  it('returns empty or missing input unchanged', async () => {
-    assert.strictEqual(await translateText('', 'es'), '');
-    assert.strictEqual(await translateText('hello', ''), 'hello');
-  });
-
-  it('falls back to the original text when no API key is configured', async () => {
-    delete process.env.TRANSLATE_API_KEY;
-    assert.strictEqual(await translateText('Hard hats required', 'es'), 'Hard hats required');
-  });
-
-  it('returns the translated text on a successful API call', async () => {
-    process.env.TRANSLATE_API_KEY = 'test-key';
-    // Fake the network call: return a canned DeepL-shaped response so the test
-    // never touches the internet.
-    global.fetch = async () => ({
-      ok: true,
-      json: async () => ({ translations: [{ text: 'Se requieren cascos' }] }),
-    });
-    assert.strictEqual(await translateText('Hard hats required', 'es'), 'Se requieren cascos');
-  });
-
-  it('falls back to the original text when the API returns an error status', async () => {
-    process.env.TRANSLATE_API_KEY = 'test-key';
-    global.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) });
-    assert.strictEqual(await translateText('Hard hats required', 'es'), 'Hard hats required');
-  });
-
-  it('falls back to the original text when the network request throws', async () => {
-    process.env.TRANSLATE_API_KEY = 'test-key';
-    global.fetch = async () => {
-      throw new Error('network down');
+  it('returns empty or missing input unchanged (no provider call)', async () => {
+    let called = false;
+    const llm = async () => {
+      called = true;
+      return { responseText: 'x' };
     };
-    assert.strictEqual(await translateText('Hard hats required', 'es'), 'Hard hats required');
+    assert.strictEqual(await translateText('', 'es', llm), '');
+    assert.strictEqual(await translateText('hello', '', llm), 'hello');
+    assert.strictEqual(called, false);
+  });
+
+  it('returns the translated text from the provider', async () => {
+    const llm = async () => ({ responseText: 'Se requieren cascos' });
+    assert.strictEqual(await translateText('Hard hats required', 'es', llm), 'Se requieren cascos');
+  });
+
+  it('translates foreign text INTO English (no English-target short-circuit)', async () => {
+    const captured = {};
+    const llm = async (params) => {
+      captured.params = params;
+      return { responseText: 'There is a leak on floor 4' };
+    };
+    const out = await translateText('Hay una fuga en el piso 4', 'en', llm);
+    assert.strictEqual(out, 'There is a leak on floor 4');
+    // It actually called the provider with the English target (the old bug skipped this).
+    assert.match(captured.params.systemPrompt, /"en"/);
+    assert.strictEqual(captured.params.text, 'Hay una fuga en el piso 4');
+  });
+
+  it('falls back to the original text when the provider throws', async () => {
+    const llm = async () => {
+      throw new Error('quota exhausted');
+    };
+    assert.strictEqual(await translateText('Hard hats required', 'es', llm), 'Hard hats required');
+  });
+
+  it('falls back to the original text when the provider returns empty', async () => {
+    const llm = async () => ({ responseText: '   ' });
+    assert.strictEqual(await translateText('Hard hats required', 'es', llm), 'Hard hats required');
   });
 });
