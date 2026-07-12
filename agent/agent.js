@@ -70,6 +70,30 @@ const RETRIEVAL_RE =
   /\b(find|search|look ?up|looking for|recall|pull up|dig up|get me|show me|where('?s| is| are)?|did (anyone|someone)|what did we (decide|say))\b/i;
 
 /**
+ * Reduce a natural-language retrieval request to search keywords. The RTS API
+ * matches on terms, so the full sentence ("find the door schedule RFI from
+ * earlier") returns nothing while "door schedule" returns the cards — strip the
+ * retrieval verbs, temporal filler, and stopwords down to the meaningful nouns.
+ * @param {string} text
+ * @returns {string} The cleaned query, or the original text if stripping left nothing.
+ */
+function toSearchQuery(text) {
+  const cleaned = text
+    .toLowerCase()
+    .replace(/\b(can|could|would) you\b/g, ' ')
+    .replace(
+      /\b(find|search(\s+for)?|look\s?up|looking for|recall|pull up|dig up|get me|show me|where('?s| is| are)?|did (anyone|someone)|what did we (decide|say)|please)\b/g,
+      ' ',
+    )
+    .replace(/\bfrom (earlier|before)\b/g, ' ')
+    .replace(/\b(the|a|an|for|me|us|about|that|this|from|earlier|recently|our|in|history|rfi)\b/g, ' ')
+    .replace(/[?.!,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length >= 2 ? cleaned : text;
+}
+
+/**
  * @typedef {Object} AgentDeps
  * @property {import('@slack/web-api').WebClient} client
  * @property {string} userId
@@ -96,7 +120,7 @@ export async function runAgent(text, history = [], deps = undefined) {
   let augmentedText = text;
   if (RETRIEVAL_RE.test(text)) {
     try {
-      const result = await searchTool.handler({ query: text });
+      const result = await searchTool.handler({ query: toSearchQuery(text) });
       const found = /** @type {any} */ (result).output;
       if (found) {
         augmentedText =
