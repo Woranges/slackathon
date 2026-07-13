@@ -1,0 +1,52 @@
+# Render Blueprint for HazTrack (https://render.com).
+#
+# Runs app.js: Slack via Socket Mode (needs no public URL) + the Twilio webhook
+# on the port Render provides. Secret values are set in the Render dashboard
+# (sync: false) — never commit them. See README / the deploy steps for the flow.
+#
+# Free tier note: a free web service sleeps after ~15 min with no inbound HTTP.
+# When it sleeps the Slack Socket Mode session drops, so keep it awake with a
+# cron ping to <your-url>/health every ~10 minutes (e.g. cron-job.org).
+services:
+  - type: web
+    name: haztrack
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node app.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Agent runs on flash-lite (high free quota); RTS is deterministic.
+      - key: AGENT_MODEL
+        value: gemini-3.1-flash-lite
+      # --- Secrets: paste values in the Render dashboard, do not commit ---
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_APP_TOKEN
+        sync: false
+      - key: SLACK_USER_TOKEN
+        sync: false
+      - key: MANAGEMENT_CHANNEL_ID
+        sync: false
+      - key: PROCORE_BASE_URL
+        sync: false
+      - key: PROCORE_AUTH_URL
+        sync: false
+      - key: PROCORE_CLIENT_ID
+        sync: false
+      - key: PROCORE_CLIENT_SECRET
+        sync: false
+      - key: PROCORE_COMPANY_ID
+        sync: false
+      - key: PROCORE_PROJECT_ID
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false

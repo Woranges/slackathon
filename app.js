@@ -21,9 +21,10 @@ registerListeners(app);
   // Also serve the Twilio webhook here so inbound SMS (worker acknowledgments,
   // SMS issue reports) shares this process's in-memory store with the Slack
   // button handlers — otherwise a broadcast created by the Escalate button is
-  // invisible to the ack arriving on a separate HTTP process. Skip if Twilio
-  // isn't configured (no point binding a port for a webhook that won't fire).
-  if (process.env.TWILIO_ACCOUNT_SID) {
+  // invisible to the ack arriving on a separate HTTP process. Start it when
+  // Twilio is configured, or when a host provides PORT (so the health check /
+  // keep-alive has something to hit even before Twilio is wired).
+  if (process.env.TWILIO_ACCOUNT_SID || process.env.PORT) {
     startTwilioWebhookServer();
   }
 })();

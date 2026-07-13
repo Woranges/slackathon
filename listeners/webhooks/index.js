@@ -37,6 +37,9 @@ export function registerWebhooks(app) {
 export function startTwilioWebhookServer(port = Number(process.env.PORT) || 3000) {
   const server = express();
   const botClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+  // Health check for the host (Render) and for a keep-alive ping that stops a
+  // free instance from sleeping (which would drop the Slack Socket Mode session).
+  server.get('/health', (_req, res) => res.status(200).send('ok'));
   server.post('/twilio/sms', express.urlencoded({ extended: false }), (req, res) =>
     handleTwilioInboundSms(req, res, botClient),
   );
